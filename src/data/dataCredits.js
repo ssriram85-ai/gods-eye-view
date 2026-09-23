@@ -78,6 +78,12 @@ export const DATA_CREDITS = [
     html: 'Earthquakes: Data courtesy of the U.S. Geological Survey',
   },
   {
+    key: 'ndma-sachet',
+    html:
+      'India disaster alerts: <a href="https://sachet.ndma.gov.in" target="_blank" rel="noopener">NDMA SACHET</a> ' +
+      '(Government of India CAP 1.2 alerts, public domain)',
+  },
+  {
     key: 'nasa-gibs',
     html:
       'Recent imagery: We acknowledge the use of imagery provided by services from ' +

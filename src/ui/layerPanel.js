@@ -45,7 +45,7 @@ const PANEL_GROUPS = [
   },
   {
     label: 'Events',
-    ids: ['rocket-launches', 'earthquakes', 'local-firms'],
+    ids: ['rocket-launches', 'earthquakes', 'sachet-alerts', 'local-firms'],
   },
   {
     label: 'Weather',
@@ -75,6 +75,7 @@ const PANEL_LABELS = {
   'alpr-cameras': 'Mapped ALPR Cameras',
   'local-datacenters': 'Data Centers',
   'local-firms': 'Active Fires',
+  'sachet-alerts': 'India Alerts (SACHET)',
 };
 
 function panelLabel(layer) {

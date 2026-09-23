@@ -527,6 +527,11 @@ export const LAYER_STATE_REGISTRY = Object.freeze([
     disposition: 'enabled-only',
   }),
   Object.freeze({
+    id: 'sachet-alerts',
+    token: '2',
+    disposition: 'enabled-only',
+  }),
+  Object.freeze({
     id: 'satellites',
     token: 's',
     disposition: 'enabled+options',
