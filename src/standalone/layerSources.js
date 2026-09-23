@@ -16,6 +16,8 @@ import { createWeatherSource } from '../layers/weather/source.js';
 import { createCycloneSource } from '../layers/cyclones/source.js';
 import { createSachetSource } from '../layers/sachet/source.js';
 import { createJtwcSource } from '../layers/jtwc/source.js';
+import { createHeatStressSource } from '../layers/heat/source.js';
+import { createWaterHazardSource } from '../layers/water/source.js';
 import { createWindSource } from '../layers/wind/source.js';
 import { createFirmsSource } from '../layers/firms/source.js';
 import { createReferenceSources } from '../sources/reference.js';
@@ -45,5 +47,7 @@ export function createStandaloneLayerSources() {
     cyclones: createCycloneSource(),
     sachet: createSachetSource(),
     jtwc: createJtwcSource(),
+    heat: createHeatStressSource(),
+    water: createWaterHazardSource(),
   };
 }

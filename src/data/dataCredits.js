@@ -84,6 +84,13 @@ export const DATA_CREDITS = [
       '(U.S. Navy / U.S. Air Force, public domain)',
   },
   {
+    key: 'osm-water-hazards',
+    html:
+      'Water hazards (quarries, tanks, reservoirs, beaches): ' +
+      '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a> ' +
+      '(ODbL 1.0; community mapped, not a hazard register)',
+  },
+  {
     key: 'ndma-sachet',
     html:
       'India disaster alerts: <a href="https://sachet.ndma.gov.in" target="_blank" rel="noopener">NDMA SACHET</a> ' +
@@ -138,7 +145,7 @@ export const DATA_CREDITS = [
   {
     key: 'open-meteo',
     html:
-      'Cockpit current conditions: ' +
+      'Heat stress layer and cockpit current conditions: ' +
       '<a href="https://open-meteo.com/en/licence" target="_blank" rel="noopener">Weather data by Open-Meteo.com</a> ' +
       '(CC BY 4.0)',
   },

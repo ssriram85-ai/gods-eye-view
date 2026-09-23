@@ -129,6 +129,8 @@ export class LayerBindings {
       'weather-cyclones',
       'weather-cyclones-jtwc',
       'sachet-alerts',
+      'water-hazards',
+      'heat-stress',
     ]) {
       const layer = this._dataManager?.layers?.get(id)?.module;
       if (typeof layer?.attachShellServices !== 'function') continue;

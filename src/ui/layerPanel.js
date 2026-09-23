@@ -45,7 +45,13 @@ const PANEL_GROUPS = [
   },
   {
     label: 'Events',
-    ids: ['rocket-launches', 'earthquakes', 'sachet-alerts', 'local-firms'],
+    ids: [
+      'rocket-launches',
+      'earthquakes',
+      'sachet-alerts',
+      'water-hazards',
+      'local-firms',
+    ],
   },
   {
     label: 'Weather',
@@ -56,6 +62,7 @@ const PANEL_GROUPS = [
       'weather-lightning',
       'weather-cyclones',
       'weather-cyclones-jtwc',
+      'heat-stress',
     ],
   },
   {
@@ -77,6 +84,8 @@ const PANEL_LABELS = {
   'local-datacenters': 'Data Centers',
   'local-firms': 'Active Fires',
   'sachet-alerts': 'India Alerts (SACHET)',
+  'water-hazards': 'Water Hazards (OSM)',
+  'heat-stress': 'Heat Stress (feels-like)',
 };
 
 function panelLabel(layer) {

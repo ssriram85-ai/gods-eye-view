@@ -24,6 +24,7 @@ import { weatherProxy } from './weather.js';
 import { cycloneProxy } from './cyclones.js';
 import { sachetProxy } from './sachet.js';
 import { jtwcProxy } from './jtwc.js';
+import { heatStressProxy } from './heat-stress.js';
 import { windProxy } from './wind.js';
 
 /** Construct the local provider plugins in their established order. */
@@ -55,6 +56,7 @@ function localProviderPlugins() {
     cycloneProxy(),
     sachetProxy(),
     jtwcProxy(),
+    heatStressProxy(),
     keySetupEndpoint(),
   ];
 }
