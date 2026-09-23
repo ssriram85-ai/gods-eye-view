@@ -6,12 +6,15 @@ const appearedDocuments = new WeakSet();
 const openDocuments = new WeakMap();
 const ORDER = [
   'weather-cyclones',
+  'weather-cyclones-jtwc',
   'wind',
   'weather-radar',
   'weather-satellite',
   'weather-lightning',
 ];
-const OBSERVED = new Set(ORDER.slice(2));
+const OBSERVED = new Set(ORDER.slice(3));
+/** Storm-list cards: categorical legend, no units, listed storms open first. */
+const CYCLONE_IDS = new Set(['weather-cyclones', 'weather-cyclones-jtwc']);
 const utc = (time) =>
   Number.isFinite(Date.parse(time))
     ? `${new Date(time).toISOString().slice(5, 16).replace('T', ' ')} UTC`
@@ -191,15 +194,15 @@ export function createWeatherPanel({
         id: 'legend',
         type: 'legend',
         legend: {
-          categorical: id === 'weather-cyclones',
+          categorical: CYCLONE_IDS.has(id),
           colors: legend.map(({ color }) => color),
           labels: legend.map(({ label }) => label),
-          units: id === 'weather-cyclones' ? '' : summary.units,
+          units: CYCLONE_IDS.has(id) ? '' : summary.units,
           zeroIndex: legend.findIndex(({ label }) => label === '0'),
         },
       };
       const blocks = [
-        ...(id === 'weather-cyclones' && list?.items?.length
+        ...(CYCLONE_IDS.has(id) && list?.items?.length
           ? [{ id: 'storms', type: 'list', list }]
           : []),
         { id: 'details', type: 'lines', lines },
@@ -272,8 +275,7 @@ export function createWeatherPanel({
           (!hasAppeared &&
             !openId &&
             ordered.find(
-              ({ id, list }) =>
-                id === 'weather-cyclones' && list?.items?.length,
+              ({ id, list }) => CYCLONE_IDS.has(id) && list?.items?.length,
             )?.id) ||
           ordered[0]?.id ||
           null;

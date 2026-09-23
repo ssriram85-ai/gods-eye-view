@@ -78,6 +78,12 @@ export const DATA_CREDITS = [
     html: 'Earthquakes: Data courtesy of the U.S. Geological Survey',
   },
   {
+    key: 'jtwc',
+    html:
+      'Cyclone warnings (NW Pacific, Indian Ocean, S Hemisphere): <a href="https://www.metoc.navy.mil/jtwc/jtwc.html" target="_blank" rel="noopener">Joint Typhoon Warning Center</a> ' +
+      '(U.S. Navy / U.S. Air Force, public domain)',
+  },
+  {
     key: 'ndma-sachet',
     html:
       'India disaster alerts: <a href="https://sachet.ndma.gov.in" target="_blank" rel="noopener">NDMA SACHET</a> ' +

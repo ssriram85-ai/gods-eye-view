@@ -60,7 +60,9 @@ export function createSelection({
       // yields to the same foreground AIS hit. Keep moving-contact precedence
       // unchanged: those handlers may issue their own camera command.
       const cycloneBackground =
-        siblingOwned && !isOwnedByOtherLayer('weather-cyclones', pickedId);
+        siblingOwned &&
+        (!isOwnedByOtherLayer('weather-cyclones', pickedId) ||
+          !isOwnedByOtherLayer('weather-cyclones-jtwc', pickedId));
       if (siblingOwned && !cycloneBackground) return;
 
       // Cards are painted on a pointer-events:none canvas, so the scene pick is

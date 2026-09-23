@@ -18,8 +18,17 @@ export function coherentCycloneGeometry(storm) {
  * Storm names and lead hours are published to the shared overlay host at the
  * same anchors the points use.
  */
-export function createCycloneRendering({ viewer, cesium: C, overlayHost }) {
-  const labels = createCycloneLabels({ host: overlayHost });
+export function createCycloneRendering({
+  viewer,
+  cesium: C,
+  overlayHost,
+  sourceId,
+  dataSourceName = 'weather-cyclones',
+}) {
+  const labels = createCycloneLabels({
+    host: overlayHost,
+    ...(sourceId ? { sourceId } : {}),
+  });
   let source = null,
     generation = 0,
     selected = null,
@@ -105,7 +114,7 @@ export function createCycloneRendering({ viewer, cesium: C, overlayHost }) {
       signal?.throwIfAborted();
       if (destroyed) return false;
       const owner = ++generation;
-      const next = new C.CustomDataSource('weather-cyclones');
+      const next = new C.CustomDataSource(dataSourceName);
       const nextCenters = new Map(),
         nextSpheres = new Map();
       const nextEntityStorms = new WeakMap();

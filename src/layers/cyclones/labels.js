@@ -139,7 +139,10 @@ export function cycloneStormIdFromEntryId(entryId) {
  * Publish the renderer's committed anchors and selection to the overlay host.
  * @param {{host?:{setEntries:Function,setVisible:Function,clearSource:Function}}} [options]
  */
-export function createCycloneLabels({ host = CYCLONE_OVERLAY_HOST } = {}) {
+export function createCycloneLabels({
+  host = CYCLONE_OVERLAY_HOST,
+  sourceId = CYCLONE_OVERLAY_SOURCE_ID,
+} = {}) {
   let storms = [];
   let selectedId = null;
   let published = false;
@@ -147,8 +150,8 @@ export function createCycloneLabels({ host = CYCLONE_OVERLAY_HOST } = {}) {
     const entries = cycloneOverlayEntries(storms, selectedId);
     let ambient = 0;
     for (const entry of entries) if (!entry.protected) ambient++;
-    host.setVisible(CYCLONE_OVERLAY_SOURCE_ID, true);
-    host.setEntries(CYCLONE_OVERLAY_SOURCE_ID, entries, {
+    host.setVisible(sourceId, true);
+    host.setEntries(sourceId, entries, {
       cohortLimit: CYCLONE_OVERLAY_COHORT_LIMIT,
       collisionCapacity: Math.min(CYCLONE_OVERLAY_COHORT_LIMIT, ambient),
       moving: false,
@@ -173,8 +176,8 @@ export function createCycloneLabels({ host = CYCLONE_OVERLAY_HOST } = {}) {
       selectedId = null;
       if (!published) return;
       published = false;
-      host.clearSource(CYCLONE_OVERLAY_SOURCE_ID);
-      host.setVisible(CYCLONE_OVERLAY_SOURCE_ID, false);
+      host.clearSource(sourceId);
+      host.setVisible(sourceId, false);
     },
   };
 }

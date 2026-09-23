@@ -41,23 +41,24 @@ const position = (value) => {
   };
 };
 
-function officialLink(value, outlook = false) {
+/** NHC/CPHC snapshot rules: storm ids, basins and the only link shapes accepted. */
+export const NHC_CYCLONE_RULES = Object.freeze({
+  idPattern: /^(?:al|ep|cp)\d{6}$/,
+  origin: 'https://www.nhc.noaa.gov',
+  advisoryLink: (url) =>
+    !url.search && /^\/text\/[A-Z0-9]+\.shtml$/.test(url.pathname),
+  outlookLink: (url) =>
+    /^\/gtwo\.php\?basin=(?:atlc|epac|cpac)&fdays=7$/.test(
+      url.pathname + url.search,
+    ),
+});
+
+function officialLink(value, rules, outlook = false) {
   if (value === null) return null;
   const url = new URL(text(value, 256));
-  if (
-    url.origin !== 'https://www.nhc.noaa.gov' ||
-    url.username ||
-    url.password ||
-    url.hash
-  )
+  if (url.origin !== rules.origin || url.username || url.password || url.hash)
     throw malformed();
-  if (
-    outlook
-      ? !/^\/gtwo\.php\?basin=(?:atlc|epac|cpac)&fdays=7$/.test(
-          url.pathname + url.search,
-        )
-      : url.search || !/^\/text\/[A-Z0-9]+\.shtml$/.test(url.pathname)
-  )
+  if (!(outlook ? rules.outlookLink(url) : rules.advisoryLink(url)))
     throw malformed();
   return url.href;
 }
@@ -104,8 +105,17 @@ function geometry(value, kind, budget) {
   return { type: value.type, coordinates };
 }
 
+/** Build a validator for one feed's id and link rules; the storm schema is shared. */
+export function createCycloneSnapshotValidator(rules = NHC_CYCLONE_RULES) {
+  return (value) => validateSnapshot(value, rules);
+}
+
 /** Project only the bounded status/geometry contract; never ingest GeoJSON properties or URLs. */
 export function validateCycloneSnapshot(value) {
+  return validateSnapshot(value, NHC_CYCLONE_RULES);
+}
+
+function validateSnapshot(value, rules) {
   if (
     !value ||
     value.schemaVersion !== 1 ||
@@ -119,7 +129,7 @@ export function validateCycloneSnapshot(value) {
     budget = { coordinates: 0, points: 0 };
   const storms = value.storms.map((raw) => {
     if (
-      !/^(?:al|ep|cp)\d{6}$/.test(raw?.id) ||
+      !rules.idPattern.test(raw?.id) ||
       seen.has(raw.id) ||
       !['current', 'pending', 'unavailable'].includes(raw.geometryStatus)
     )
@@ -181,8 +191,8 @@ export function validateCycloneSnapshot(value) {
         directionDegrees: number(raw.movement?.directionDegrees, 0, 360),
         speedKt: number(raw.movement?.speedKt, 0, 200),
       },
-      advisoryUrl: officialLink(raw.advisoryUrl),
-      outlookUrl: officialLink(raw.outlookUrl, true),
+      advisoryUrl: officialLink(raw.advisoryUrl, rules),
+      outlookUrl: officialLink(raw.outlookUrl, rules, true),
       geometryStatus: raw.geometryStatus,
       geometryAdvisoryNumber,
       forecastPoints,

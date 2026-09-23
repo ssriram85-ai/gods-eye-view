@@ -15,6 +15,7 @@ import { createOverpassAlprSource } from '../layers/alpr/source.js';
 import { createWeatherSource } from '../layers/weather/source.js';
 import { createCycloneSource } from '../layers/cyclones/source.js';
 import { createSachetSource } from '../layers/sachet/source.js';
+import { createJtwcSource } from '../layers/jtwc/source.js';
 import { createWindSource } from '../layers/wind/source.js';
 import { createFirmsSource } from '../layers/firms/source.js';
 import { createReferenceSources } from '../sources/reference.js';
@@ -43,5 +44,6 @@ export function createStandaloneLayerSources() {
     weather: createWeatherSource(),
     cyclones: createCycloneSource(),
     sachet: createSachetSource(),
+    jtwc: createJtwcSource(),
   };
 }

@@ -26,11 +26,40 @@ const CLASSIFICATION_NAMES = Object.freeze({
   TD: 'Tropical depression',
   SS: 'Subtropical storm',
   SD: 'Subtropical depression',
+  TY: 'Typhoon',
+  STY: 'Super typhoon',
+  TC: 'Tropical cyclone',
 });
 const classificationName = (code) =>
   Object.hasOwn(CLASSIFICATION_NAMES, code) ? CLASSIFICATION_NAMES[code] : code;
 const number = (value, unit) =>
   value === null ? 'Unavailable' : `${value} ${unit}`;
+
+/**
+ * Presentation of one cyclone feed. The NHC/CPHC profile is the default; a
+ * second instance (JTWC) supplies its own ids, names and hazard wording so
+ * the same renderer never describes a danger swath as an uncertainty cone.
+ */
+export const NHC_CYCLONE_PROFILE = Object.freeze({
+  id: 'weather-cyclones',
+  overlaySourceId: CYCLONE_OVERLAY_SOURCE_ID,
+  name: 'Cyclone advisories',
+  source: 'NOAA NHC / CPHC',
+  coverage: COVERAGE,
+  summaryLabel: 'Cyclones · NHC / CPHC',
+  coverageLabel: 'Atlantic · E/C Pacific',
+  listAriaLabel: 'Active NHC and CPHC cyclone advisories',
+  emptyText: 'No active NHC/CPHC systems',
+  advisoryNoun: 'Advisory',
+  advisoryAction: 'Official advisory ↗',
+  geometryCurrent: 'Track and cone match this advisory',
+  geometryPending: (advisory) => `Track/cone awaiting advisory ${advisory}`,
+  geometryUnavailable: 'Track/cone unavailable',
+  legendTrack: 'Advisory center / forecast track',
+  legendCone: 'Center-track uncertainty cone',
+  infoTitle:
+    'Select a storm on the map, or choose a storm in the list to select it and move the camera. Click empty map space to clear the selection. NOAA NHC/CPHC advisory context. The cone describes forecast center-track uncertainty, not storm size or the full hazard area. Forecast point labels are source lead hours, not times computed from advisory issuance. Geometry follows the surface; height is not weather altitude. Consult the official advisory.',
+});
 
 /** Advisory status and coherent forecast geometry; selected through the shared row list. */
 export function createCyclonesLayer({
@@ -41,9 +70,11 @@ export function createCyclonesLayer({
   createRendering = createCycloneRendering,
   matchMedia = globalThis.matchMedia?.bind(globalThis),
   openLink = (url) => globalThis.open?.(url, '_blank', 'noopener,noreferrer'),
+  profile = NHC_CYCLONE_PROFILE,
 } = {}) {
   if (typeof feed?.getSnapshot !== 'function')
     throw new TypeError('Cyclones require a snapshot source');
+  profile = { ...NHC_CYCLONE_PROFILE, ...profile };
   let viewer = null,
     rendering = null,
     snapshot = null,
@@ -149,7 +180,7 @@ export function createCyclonesLayer({
       if (hit.sourceId === VESSEL_OVERLAY_SOURCE_ID) return;
       // Storm cards and lead-hour labels paint on the same canvas; a click on
       // one selects its storm. An id from a superseded advisory changes nothing.
-      if (hit.sourceId === CYCLONE_OVERLAY_SOURCE_ID) {
+      if (hit.sourceId === profile.overlaySourceId) {
         const id = cycloneStormIdFromEntryId(hit.entryId);
         if (id) layer.setParams({ stormId: id });
         return;
@@ -168,14 +199,20 @@ export function createCyclonesLayer({
     if (owner && !owner.isDestroyed?.()) owner.destroy();
   }
   const layer = {
-    id: 'weather-cyclones',
-    name: 'Cyclone advisories',
+    id: profile.id,
+    name: profile.name,
     icon: '◉',
-    source: 'NOAA NHC / CPHC',
+    source: profile.source,
     updateInterval: 300_000,
     init(nextViewer) {
       viewer = nextViewer;
-      rendering = createRendering({ viewer, cesium, overlayHost });
+      rendering = createRendering({
+        viewer,
+        cesium,
+        overlayHost,
+        sourceId: profile.overlaySourceId,
+        dataSourceName: profile.id,
+      });
     },
     attachShellServices(services) {
       runNavigation =
@@ -188,7 +225,7 @@ export function createCyclonesLayer({
       if (!destroyed && !enabled) {
         enabled = true;
         registerPickOwner(
-          'weather-cyclones',
+          profile.id,
           (id) => enabled && rendering?.ownsPickId?.(id) === true,
         );
         installSelection();
@@ -196,7 +233,7 @@ export function createCyclonesLayer({
     },
     disable() {
       enabled = false;
-      unregisterPickOwner('weather-cyclones');
+      unregisterPickOwner(profile.id);
       removeSelection();
       request?.abort();
       request = null;
@@ -254,6 +291,7 @@ export function createCyclonesLayer({
         return true;
       } catch (cause) {
         if (controller.signal.aborted || request !== controller) return false;
+        console.warn(`[Data:${profile.id}] Update error:`, cause);
         error = cause?.message || 'Cyclone advisories unavailable';
         // Failed acquisition has no bounded last-good age guarantee at this layer.
         rendering?.clear();
@@ -316,10 +354,10 @@ export function createCyclonesLayer({
       const geometry =
         storm &&
         (coherentCycloneGeometry(storm)
-          ? 'Track and cone match this advisory'
+          ? profile.geometryCurrent
           : storm.geometryStatus === 'pending'
-            ? `Track/cone awaiting advisory ${storm.advisoryNumber}`
-            : 'Track/cone unavailable');
+            ? profile.geometryPending(storm.advisoryNumber)
+            : profile.geometryUnavailable);
       const status =
         error ||
         (snapshot?.stale
@@ -330,9 +368,9 @@ export function createCyclonesLayer({
               ? geometry
               : null);
       const detail = storm
-        ? `${storm.name} · ${classificationName(storm.classification)} · Advisory ${storm.advisoryNumber} · issued ${utc(storm.issuedAt)}`
+        ? `${storm.name} · ${classificationName(storm.classification)} · ${profile.advisoryNoun} ${storm.advisoryNumber} · issued ${utc(storm.issuedAt)}`
         : empty
-          ? 'No active NHC/CPHC systems'
+          ? profile.emptyText
           : snapshot?.storms.length
             ? `${snapshot.storms.length} active storm${snapshot.storms.length === 1 ? '' : 's'}`
             : loading
@@ -341,8 +379,8 @@ export function createCyclonesLayer({
       const controls = {
         readout: true,
         summary: {
-          label: 'Cyclones · NHC / CPHC',
-          coverage: 'Atlantic · E/C Pacific',
+          label: profile.summaryLabel,
+          coverage: profile.coverageLabel,
           compact: snapshot?.storms.length
             ? `${snapshot.storms.length} active storm${snapshot.storms.length === 1 ? '' : 's'}${storm ? ` · ${storm.name} selected` : ''}`
             : detail,
@@ -350,7 +388,7 @@ export function createCyclonesLayer({
             ? [
                 {
                   id: 'advisory',
-                  label: 'Official advisory ↗',
+                  label: profile.advisoryAction,
                   href: storm.advisoryUrl,
                 },
               ]
@@ -375,7 +413,7 @@ export function createCyclonesLayer({
           units: 'kt',
         },
         list: {
-          ariaLabel: 'Active NHC and CPHC cyclone advisories',
+          ariaLabel: profile.listAriaLabel,
           items: (snapshot?.storms || []).map((item, index) => ({
             id: item.id,
             ordinal: index + 1,
@@ -388,15 +426,14 @@ export function createCyclonesLayer({
         chips: [],
         legend: storm
           ? [
-              { label: 'Advisory center / forecast track', color: '#7fe6ed' },
-              { label: 'Center-track uncertainty cone', color: '#7fe6ed44' },
+              { label: profile.legendTrack, color: '#7fe6ed' },
+              { label: profile.legendCone, color: '#7fe6ed44' },
             ]
           : [],
         info: storm
           ? `${detail}\nPosition as of ${utc(storm.positionAt)}\nMaximum sustained wind: ${number(storm.windKt, 'kt')} · Pressure: ${number(storm.pressureHpa, 'hPa')}\n${geometry}${status && status !== geometry ? '\n' + status : ''}\n${snapshot.coverage}`
-          : `${detail}${status ? '\n' + status : ''}\n${snapshot?.coverage || COVERAGE}`,
-        infoTitle:
-          'Select a storm on the map, or choose a storm in the list to select it and move the camera. Click empty map space to clear the selection. NOAA NHC/CPHC advisory context. The cone describes forecast center-track uncertainty, not storm size or the full hazard area. Forecast point labels are source lead hours, not times computed from advisory issuance. Geometry follows the surface; height is not weather altitude. Consult the official advisory.',
+          : `${detail}${status ? '\n' + status : ''}\n${snapshot?.coverage || profile.coverage}`,
+        infoTitle: profile.infoTitle,
       };
       return controls;
     },
@@ -413,7 +450,7 @@ export function createCyclonesLayer({
         loading,
         error,
         stale: Boolean(snapshot?.stale),
-        source: 'NOAA NHC / CPHC',
+        source: profile.source,
         advisoryAt: storm?.issuedAt || null,
         empty: Boolean(
           snapshot && !snapshot.unavailable && !snapshot.storms.length,

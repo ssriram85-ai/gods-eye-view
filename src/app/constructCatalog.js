@@ -1,6 +1,7 @@
 import { createWeatherClock } from '../layers/weather/clock.js';
 import { createWeatherLayer } from '../layers/weather/index.js';
 import { createCyclonesLayer } from '../layers/cyclones/index.js';
+import { createJtwcLayer } from '../layers/jtwc/index.js';
 import { createWindLayer } from '../layers/wind/index.js';
 import { createLayerCatalog } from './catalog.js';
 import { LAYER_STATE_REGISTRY } from '../data/layerState.js';
@@ -51,6 +52,7 @@ const SOURCE_METHODS = Object.freeze({
   wind: ['getSnapshot'],
   weather: ['getSnapshot'],
   cyclones: ['getSnapshot'],
+  jtwc: ['getSnapshot'],
   earthquakes: ['getSnapshot'],
   sachet: ['getSnapshot'],
   cables: ['fetch'],
@@ -159,6 +161,7 @@ export function createApplicationCatalog({
           clock: weatherClock,
         }),
         createCyclonesLayer({ feed: sources.cyclones }),
+        createJtwcLayer({ feed: sources.jtwc }),
         ...createInfrastructureLayers(localGeoJsonServices),
         createApplicationCables({ source: sources.cables }),
         createApplicationFirms({
