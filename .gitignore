@@ -19,3 +19,6 @@ output/
 3d-models/
 pinokio/ENVIRONMENT
 pinokio/.installed
+
+# Geofence alert service runtime state (assets carry webhook secrets)
+alert-service/data/

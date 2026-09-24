@@ -1,0 +1,12 @@
+{
+  "name": "gev-alert-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Geofence alert service: matches God's Eye View hazard feeds (SACHET, JTWC, heat stress) against registered assets and delivers signed webhooks.",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test test/*.test.mjs"
+  }
+}
