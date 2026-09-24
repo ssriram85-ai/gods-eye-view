@@ -6,6 +6,8 @@ import { createCorridorStore, resolveCorridor, sampleCorridor, profile, compareP
 import { renderReport } from './report.mjs';
 
 const PORT = Number(process.env.PORT || 4180);
+// Loopback by default (a laptop); a hosted deployment sets HOST=0.0.0.0.
+const HOST = process.env.HOST || '127.0.0.1';
 const BASE_URL = (process.env.GEV_BASE_URL || 'http://localhost:4173').replace(/\/$/, '');
 const POLL_MINUTES = Number(process.env.POLL_MINUTES || 10);
 const DATA_DIR = process.env.DATA_DIR || join(dirname(fileURLToPath(import.meta.url)), '..', 'data');
@@ -64,7 +66,14 @@ async function readJson(req) {
   }
   return body ? JSON.parse(body) : {};
 }
-const authorized = (req) => !ADMIN_TOKEN || req.headers.authorization === `Bearer ${ADMIN_TOKEN}`;
+// With ADMIN_TOKEN set, reads of reports and health stay public (a corridor
+// report is meant to be shared); everything that registers, deletes, samples
+// or polls needs the token.
+const PUBLIC_READ = /^\/(health|corridors(\/[a-z0-9-]+(\/(report|latest|series|compare))?)?)$/;
+const authorized = (req) =>
+  !ADMIN_TOKEN ||
+  req.headers.authorization === `Bearer ${ADMIN_TOKEN}` ||
+  (req.method === 'GET' && PUBLIC_READ.test(new URL(req.url, 'http://localhost').pathname));
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
@@ -132,8 +141,8 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`[alerts] listening on http://127.0.0.1:${PORT} · feeds from ${BASE_URL} · poll every ${POLL_MINUTES} min · data in ${DATA_DIR}`);
+server.listen(PORT, HOST, () => {
+  console.log(`[alerts] listening on http://${HOST}:${PORT} · feeds from ${BASE_URL} · poll every ${POLL_MINUTES} min · data in ${DATA_DIR}`);
   service.poll().catch((e) => console.error('[alerts] first poll failed:', e.message));
   setInterval(() => service.poll().catch((e) => console.error('[alerts] poll failed:', e.message)), POLL_MINUTES * 60_000).unref();
   if (TOMTOM_KEY) {

@@ -1,0 +1,67 @@
+# Render Blueprint — God's Eye View server + geofence alert service
+# ==================================================================
+# Two small services in Singapore, next to the ShelfLifePro India host.
+#
+#   gev-server          the GEV feed server (SACHET, JTWC, heat stress, TomTom
+#                       traffic and the rest of the app). A PRIVATE service:
+#                       reachable only by other services in this region, so
+#                       the internet cannot spend the TomTom quota.
+#   gev-alert-service   the geofence alert service + corridor monitor. Public,
+#                       because products register sites here and corridor
+#                       reports are meant to be shared. Everything except
+#                       reads of reports and /health needs ADMIN_TOKEN.
+#
+# Set TOMTOM_API_KEY on both services in the Render dashboard (sync: false
+# keeps it out of this file). The alert service reaches the GEV server over
+# the private network at http://gev-server:10000.
+
+services:
+  - type: pserv
+    name: gev-server
+    runtime: node
+    region: singapore
+    plan: starter
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npx vite preview --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: NODE_VERSION
+        value: 24.21.0
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: "10000"
+      - key: TOMTOM_API_KEY
+        sync: false
+      - key: OPENSKY_AUTH_MODE
+        value: anon
+
+  - type: web
+    name: gev-alert-service
+    runtime: node
+    region: singapore
+    plan: starter
+    rootDir: alert-service
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 24.21.0
+      - key: HOST
+        value: 0.0.0.0
+      - key: DATA_DIR
+        value: /var/data
+      - key: GEV_BASE_URL
+        value: http://gev-server:10000
+      - key: POLL_MINUTES
+        value: "10"
+      - key: CORRIDOR_MINUTES
+        value: "15"
+      - key: ADMIN_TOKEN
+        generateValue: true
+      - key: TOMTOM_API_KEY
+        sync: false
+    disk:
+      name: gev-alerts-data
+      mountPath: /var/data
+      sizeGB: 1
