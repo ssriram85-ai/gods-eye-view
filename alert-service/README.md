@@ -29,7 +29,7 @@ Environment: `PORT` (4180), `GEV_BASE_URL` (http://localhost:4173), `POLL_MINUTE
 - `GET /events` — the normalized events from the last poll (no geometry).
 - `POST /poll` — poll now.
 
-Asset fields: `product` (slug), `id`, `tenant_id`, `name`, `latitude`, `longitude`, `radius_km` (0–200), `webhook_url`, `webhook_secret`, `thresholds: { min_severity, heat_feels_like_c }`.
+Asset fields: `product` (slug), `id`, `tenant_id`, `name`, `latitude`, `longitude`, `radius_km` (0–200), `webhook_url`, `webhook_secret`, `thresholds: { min_severity, heat_feels_like_c }`. An asset may send `city` (and optional `country`, default `IN`) instead of coordinates; the service geocodes it through TomTom, caches the answer, returns the placed asset with a `geocoded` label, and lists anything it could not place under `rejected` instead of registering it somewhere wrong. `GET /geocode?q=&country=` exposes the same lookup.
 
 ## Webhook contract
 

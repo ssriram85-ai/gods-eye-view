@@ -165,3 +165,28 @@ test('the service delivers new matches once, escalations, and clearances only fr
   assert.equal(reloaded.listAssets().length, 2, 'assets survive a restart');
   assert.equal(reloaded.health().assets, 2);
 });
+
+test('geocoder resolves through TomTom once per city and caches the miss too', async () => {
+  const { createGeocoder } = await import('../src/geocode.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'gev-geo-'));
+  const { createStore } = await import('../src/store.mjs');
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url.includes('Atlantis')) return { ok: true, json: async () => ({ results: [] }) };
+    return { ok: true, json: async () => ({ results: [{ position: { lat: 13.0721, lon: 80.2019 }, address: { municipality: 'Chennai', countrySubdivision: 'Tamil Nadu', countryCode: 'IN' } }] }) };
+  };
+  const g = createGeocoder({ key: 'k', store: createStore(dir), fetchImpl });
+  const hit = await g.geocode('Chennai');
+  assert.deepEqual(hit, { latitude: 13.0721, longitude: 80.2019, label: 'Chennai, Tamil Nadu, IN' });
+  assert.match(calls[0], /geocode\/Chennai\.json\?limit=1&key=k&countrySet=IN/);
+  await g.geocode('  chennai ');
+  assert.equal(calls.length, 1, 'cached, case- and space-insensitive');
+  assert.equal(await g.geocode('Atlantis'), null);
+  await g.geocode('Atlantis');
+  assert.equal(calls.length, 2, 'a miss is cached as well');
+  const reloaded = createGeocoder({ key: 'k', store: createStore(dir), fetchImpl });
+  await reloaded.geocode('Chennai');
+  assert.equal(calls.length, 2, 'cache survives a restart');
+  await assert.rejects(createGeocoder({ key: '', fetchImpl }).geocode('Chennai'), /TOMTOM_API_KEY/);
+});

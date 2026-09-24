@@ -4,6 +4,8 @@ import { dirname, join } from 'node:path';
 import { createService } from './service.mjs';
 import { createCorridorStore, resolveCorridor, sampleCorridor, profile, compareProfiles, SEED_CORRIDORS } from './corridor.mjs';
 import { renderReport } from './report.mjs';
+import { createGeocoder } from './geocode.mjs';
+import { createStore } from './store.mjs';
 
 const PORT = Number(process.env.PORT || 4180);
 // Loopback by default (a laptop); a hosted deployment sets HOST=0.0.0.0.
@@ -17,6 +19,31 @@ const CORRIDOR_MINUTES = Number(process.env.CORRIDOR_MINUTES || 15);
 
 const service = createService({ baseUrl: BASE_URL, dataDir: DATA_DIR });
 const corridors = createCorridorStore(join(DATA_DIR, 'corridors.db'));
+const geocoder = createGeocoder({ key: TOMTOM_KEY, store: createStore(DATA_DIR) });
+
+/**
+ * Products that only know a site's city send it without coordinates; the
+ * service geocodes it (TomTom, cached) before registering. An asset that
+ * cannot be placed is reported back, never registered somewhere wrong.
+ */
+async function placeAssets(list) {
+  const placed = [], failed = [];
+  for (const a of list) {
+    const hasCoords = a && a.latitude != null && a.latitude !== '' && a.longitude != null && a.longitude !== '';
+    if (hasCoords || !a?.city) {
+      placed.push(a);
+      continue;
+    }
+    try {
+      const hit = await geocoder.geocode(a.city, { country: a.country || 'IN' });
+      if (hit) placed.push({ ...a, latitude: hit.latitude, longitude: hit.longitude, geocoded: hit.label });
+      else failed.push({ id: a.id, product: a.product, error: `could not geocode '${a.city}'` });
+    } catch (error) {
+      failed.push({ id: a.id, product: a.product, error: error.message });
+    }
+  }
+  return { placed, failed };
+}
 
 const parseWindow = (text) => {
   const m = /^(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})$/.exec(String(text || ''));
@@ -84,8 +111,21 @@ const server = createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/assets') {
       const body = await readJson(req);
       const list = Array.isArray(body) ? body : Array.isArray(body.assets) ? body.assets : [body];
-      const saved = list.map((a) => service.upsertAsset(a));
-      return json(res, 200, { assets: saved });
+      const { placed, failed } = await placeAssets(list);
+      const saved = [], rejected = [...failed];
+      for (const a of placed) {
+        try {
+          const asset = service.upsertAsset(a);
+          saved.push(a.geocoded ? { ...asset, geocoded: a.geocoded } : asset);
+        } catch (error) {
+          rejected.push({ id: a?.id, product: a?.product, error: error.message });
+        }
+      }
+      return json(res, 200, { assets: saved, rejected });
+    }
+    if (req.method === 'GET' && url.pathname === '/geocode') {
+      const hit = await geocoder.geocode(url.searchParams.get('q'), { country: url.searchParams.get('country') || 'IN' });
+      return json(res, hit ? 200 : 404, hit || { error: 'no match' });
     }
     const removal = url.pathname.match(/^\/assets\/(.+)$/);
     if (req.method === 'DELETE' && removal)
