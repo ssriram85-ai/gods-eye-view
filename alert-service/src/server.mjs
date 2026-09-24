@@ -6,6 +6,8 @@ import { createCorridorStore, resolveCorridor, sampleCorridor, profile, compareP
 import { renderReport } from './report.mjs';
 import { createGeocoder } from './geocode.mjs';
 import { createStore } from './store.mjs';
+import { lastCompletedWeek, weekBounds, summarizeWeek, renderWeeklyHtml, renderWeeklyText } from './weekly.mjs';
+import { sendMail } from './mail.mjs';
 
 const PORT = Number(process.env.PORT || 4180);
 // Loopback by default (a laptop); a hosted deployment sets HOST=0.0.0.0.
@@ -16,10 +18,55 @@ const DATA_DIR = process.env.DATA_DIR || join(dirname(fileURLToPath(import.meta.
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 const TOMTOM_KEY = (process.env.TOMTOM_API_KEY || '').trim();
 const CORRIDOR_MINUTES = Number(process.env.CORRIDOR_MINUTES || 15);
+// A hosted GEV behind its login gate: the same password opens its feeds to us.
+const GEV_GATE_PASSWORD = (process.env.GEV_GATE_PASSWORD || '').trim();
+// Weekly corridor report: rendered at /weekly, emailed on REPORT_DAY (1 = Monday)
+// at REPORT_HOUR IST when SMTP_USER/SMTP_PASS and REPORT_TO are set.
+const REPORT_TO = (process.env.REPORT_TO || '').split(',').map((s) => s.trim()).filter(Boolean);
+const SMTP = { host: process.env.SMTP_HOST || 'smtp.gmail.com', port: Number(process.env.SMTP_PORT || 465), user: (process.env.SMTP_USER || '').trim(), pass: process.env.SMTP_PASS || '', from: process.env.REPORT_FROM || `GEV corridor monitor <${(process.env.SMTP_USER || '').trim()}>` };
+const REPORT_BASE_URL = (process.env.REPORT_BASE_URL || '').replace(/\/$/, '');
+const REPORT_DAY = Number(process.env.REPORT_DAY ?? 1);
+const REPORT_HOUR = Number(process.env.REPORT_HOUR ?? 7);
 
-const service = createService({ baseUrl: BASE_URL, dataDir: DATA_DIR });
+const service = createService({ baseUrl: BASE_URL, dataDir: DATA_DIR, gateToken: GEV_GATE_PASSWORD });
 const corridors = createCorridorStore(join(DATA_DIR, 'corridors.db'));
 const geocoder = createGeocoder({ key: TOMTOM_KEY, store: createStore(DATA_DIR) });
+const weeklyStore = createStore(join(DATA_DIR, 'weekly'));
+
+/** Summaries for every corridor for one week; saved so past weeks stay readable. */
+function weeklySummaries(week) {
+  const summaries = corridors.listCorridors().map((corridor) => summarizeWeek({ store: corridors, corridor, week }));
+  weeklyStore.write(week.key, { week, generatedAt: new Date().toISOString(), summaries });
+  return summaries;
+}
+
+const mailConfigured = () => Boolean(SMTP.user && SMTP.pass && REPORT_TO.length);
+
+/** Build the week's report and, when mail is configured, send it. */
+async function runWeeklyReport({ week = lastCompletedWeek(), send = true } = {}) {
+  const summaries = weeklySummaries(week);
+  const result = { week: week.key, corridors: summaries.length, sent: false, to: REPORT_TO };
+  if (send && mailConfigured() && summaries.length) {
+    const subject = `OMR corridor report · week ${week.key} (${week.label})`;
+    const { accepted } = await sendMail({ ...SMTP, to: REPORT_TO, subject,
+      html: renderWeeklyHtml({ summaries, week, baseUrl: REPORT_BASE_URL }), text: renderWeeklyText({ summaries, week, baseUrl: REPORT_BASE_URL }) });
+    result.sent = true;
+    result.accepted = accepted;
+    weeklyStore.write('state', { lastSent: week.key, at: new Date().toISOString(), accepted });
+  } else if (send && !mailConfigured()) result.skipped = 'SMTP_USER, SMTP_PASS and REPORT_TO are not all set';
+  console.log(`[weekly] ${week.key}: ${summaries.length} corridor(s)${result.sent ? ` emailed to ${result.accepted.join(', ')}` : result.skipped ? ` (not emailed: ${result.skipped})` : ''}`);
+  return result;
+}
+
+/** Once a minute: is it report time in IST, and has this week's report gone out? */
+function weeklyTick() {
+  const ist = new Date(Date.now() + 330 * 60_000);
+  if (ist.getUTCDay() !== REPORT_DAY || ist.getUTCHours() !== REPORT_HOUR) return;
+  const week = lastCompletedWeek();
+  if (weeklyStore.read('state', {}).lastSent === week.key) return;
+  if (!mailConfigured()) return;
+  runWeeklyReport({ week }).catch((e) => console.error('[weekly] send failed:', e.message));
+}
 
 /**
  * Products that only know a site's city send it without coordinates; the
@@ -96,7 +143,7 @@ async function readJson(req) {
 // With ADMIN_TOKEN set, reads of reports and health stay public (a corridor
 // report is meant to be shared); everything that registers, deletes, samples
 // or polls needs the token.
-const PUBLIC_READ = /^\/(health|corridors(\/[a-z0-9-]+(\/(report|latest|series|compare))?)?)$/;
+const PUBLIC_READ = /^\/(health|weekly(\/\d{4}-W\d{2}(\.json)?)?|corridors(\/[a-z0-9-]+(\/(report|latest|series|compare))?)?)$/;
 const authorized = (req) =>
   !ADMIN_TOKEN ||
   req.headers.authorization === `Bearer ${ADMIN_TOKEN}` ||
@@ -134,6 +181,22 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { matches: service.listMatches({ product: url.searchParams.get('product') || undefined, asset: url.searchParams.get('asset') || undefined }) });
     if (req.method === 'GET' && url.pathname === '/events') return json(res, 200, { events: service.listEvents() });
     if (req.method === 'POST' && url.pathname === '/poll') return json(res, 200, await service.poll());
+
+    // ---- weekly corridor report ----
+    if (req.method === 'POST' && url.pathname === '/weekly/send') {
+      const week = url.searchParams.get('week') ? weekBounds(url.searchParams.get('week')) : lastCompletedWeek();
+      if (!week) return json(res, 400, { error: 'week must look like 2026-W39' });
+      return json(res, 200, await runWeeklyReport({ week, send: url.searchParams.get('send') !== '0' }));
+    }
+    const wm = url.pathname.match(/^\/weekly(?:\/(\d{4}-W\d{2}))?(\.json)?$/);
+    if (req.method === 'GET' && wm) {
+      const week = wm[1] ? weekBounds(wm[1]) : lastCompletedWeek();
+      if (!week) return json(res, 400, { error: 'week must look like 2026-W39' });
+      const summaries = weeklySummaries(week);
+      if (wm[2]) return json(res, 200, { week, summaries });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(renderWeeklyHtml({ summaries, week, baseUrl: REPORT_BASE_URL }));
+    }
 
     // ---- corridor monitor ----
     if (req.method === 'GET' && url.pathname === '/corridors')
@@ -189,6 +252,8 @@ server.listen(PORT, HOST, () => {
     console.log(`[corridors] TomTom key present · sampling every ${CORRIDOR_MINUTES} min · reports at /corridors/<id>/report`);
     seedCorridors().then(sampleAllCorridors).catch((e) => console.error('[corridors] start failed:', e.message));
     setInterval(() => sampleAllCorridors().catch((e) => console.error('[corridors] sample failed:', e.message)), CORRIDOR_MINUTES * 60_000).unref();
+    console.log(`[weekly] report at /weekly · ${mailConfigured() ? `emailed to ${REPORT_TO.join(', ')} every week, day ${REPORT_DAY} ${String(REPORT_HOUR).padStart(2, '0')}:00 IST` : 'email off (set SMTP_USER, SMTP_PASS, REPORT_TO)'}`);
+    setInterval(weeklyTick, 60_000).unref();
   } else {
     console.log('[corridors] TOMTOM_API_KEY not set; corridor monitor idle');
   }

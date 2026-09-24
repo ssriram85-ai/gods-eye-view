@@ -245,7 +245,8 @@ export function compareProfiles(before, during) {
     .map((d) => {
       const b = byslot.get(d.slot);
       return { slot: d.slot, label: d.label, before: b.speedRatio, during: d.speedRatio, change: d.speedRatio - b.speedRatio,
-        beforeTravelS: b.travelTimeS, duringTravelS: d.travelTimeS, samplesBefore: b.samples, samplesDuring: d.samples };
+        beforeSpeed: b.meanSpeed, duringSpeed: d.meanSpeed, beforeTravelS: b.travelTimeS, duringTravelS: d.travelTimeS,
+        samplesBefore: b.samples, samplesDuring: d.samples };
     });
   const worst = rows.reduce((w, r) => (w === null || r.change < w.change ? r : w), null);
   const mean = rows.length ? rows.reduce((s, r) => s + r.change, 0) / rows.length : null;

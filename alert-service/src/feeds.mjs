@@ -100,11 +100,11 @@ export function normalizeHeat(snapshot) {
   });
 }
 
-async function getJson(url, fetchImpl, timeoutMs) {
+async function getJson(url, fetchImpl, timeoutMs, headers = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const r = await fetchImpl(url, { signal: controller.signal, headers: { Accept: 'application/json' } });
+    const r = await fetchImpl(url, { signal: controller.signal, headers: { Accept: 'application/json', ...headers } });
     if (!r.ok) throw new Error(`${url} -> HTTP ${r.status}`);
     return await r.json();
   } finally {
@@ -112,8 +112,12 @@ async function getJson(url, fetchImpl, timeoutMs) {
   }
 }
 
-/** Fetch every feed; a feed that fails is reported, never fabricated. */
-export async function fetchEvents({ baseUrl, fetchImpl = fetch, timeoutMs = 90_000 }) {
+/**
+ * Fetch every feed; a feed that fails is reported, never fabricated. A GEV
+ * behind its login gate is opened with `gateToken` (its GEV_GATE_PASSWORD).
+ */
+export async function fetchEvents({ baseUrl, fetchImpl = fetch, timeoutMs = 90_000, gateToken = '' }) {
+  const headers = gateToken ? { Authorization: `Bearer ${gateToken}` } : {};
   const feeds = [
     ['sachet', '/api/sachet', normalizeSachet],
     ['jtwc', '/api/jtwc', normalizeJtwc],
@@ -124,7 +128,7 @@ export async function fetchEvents({ baseUrl, fetchImpl = fetch, timeoutMs = 90_0
   await Promise.all(
     feeds.map(async ([name, path, normalize]) => {
       try {
-        const snapshot = await getJson(`${baseUrl}${path}`, fetchImpl, timeoutMs);
+        const snapshot = await getJson(`${baseUrl}${path}`, fetchImpl, timeoutMs, headers);
         const list = normalize(snapshot);
         events.push(...list);
         status[name] = { ok: true, stale: Boolean(snapshot.stale), count: list.length, fetchedAt: snapshot.fetchedAt ?? null };

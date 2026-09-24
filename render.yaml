@@ -2,22 +2,27 @@
 # ==================================================================
 # Two small services in Singapore, next to the ShelfLifePro India host.
 #
-#   gev-server          the GEV feed server (SACHET, JTWC, heat stress, TomTom
-#                       traffic and the rest of the app). A PRIVATE service:
-#                       reachable only by other services in this region, so
-#                       the internet cannot spend the TomTom quota.
+#   gev-map             the GEV app and feed server (SACHET, JTWC, heat stress,
+#                       TomTom traffic and the rest). Public, but behind the
+#                       login gate: every request needs a session from
+#                       /gate/login or the gate password as a bearer token, so
+#                       the internet cannot spend the TomTom quota. Set
+#                       GEV_GATE_PASSWORD (one shared password) and/or
+#                       GEV_GATE_USERS ("name:pw,name2:pw") in the dashboard.
 #   gev-alert-service   the geofence alert service + corridor monitor. Public,
 #                       because products register sites here and corridor
 #                       reports are meant to be shared. Everything except
 #                       reads of reports and /health needs ADMIN_TOKEN.
 #
-# Set TOMTOM_API_KEY on both services in the Render dashboard (sync: false
-# keeps it out of this file). The alert service reaches the GEV server over
-# the private network at http://gev-server:10000.
+# Set TOMTOM_API_KEY and GEV_GATE_PASSWORD on both services in the Render
+# dashboard (sync: false keeps them out of this file). The alert service
+# reaches the GEV server over the private network at http://gev-map:10000 and
+# opens the gate with the same password. For the emailed weekly corridor
+# report set SMTP_USER, SMTP_PASS (a Gmail app password works) and REPORT_TO.
 
 services:
-  - type: pserv
-    name: gev-server
+  - type: web
+    name: gev-map
     runtime: node
     region: singapore
     plan: starter
@@ -32,6 +37,12 @@ services:
         value: "10000"
       - key: TOMTOM_API_KEY
         sync: false
+      - key: GEV_GATE_PASSWORD
+        sync: false
+      - key: GEV_GATE_USERS
+        sync: false
+      - key: GEV_GATE_SECRET
+        generateValue: true
       - key: OPENSKY_AUTH_MODE
         value: anon
 
@@ -53,7 +64,17 @@ services:
       - key: DATA_DIR
         value: /var/data
       - key: GEV_BASE_URL
-        value: http://gev-server:10000
+        value: http://gev-map:10000
+      - key: GEV_GATE_PASSWORD
+        sync: false
+      - key: REPORT_BASE_URL
+        value: https://gev-alert-service.onrender.com
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: REPORT_TO
+        sync: false
       - key: POLL_MINUTES
         value: "10"
       - key: CORRIDOR_MINUTES

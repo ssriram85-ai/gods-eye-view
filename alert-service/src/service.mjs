@@ -61,7 +61,7 @@ const publicEvent = ({ geometry, ...event }) => ({ ...event, geometry_type: geom
  * The service: registry of assets, a poll that matches feeds against them,
  * signed deliveries for new and cleared matches, and JSON snapshots on disk.
  */
-export function createService({ baseUrl, dataDir, fetchImpl = fetch, now = () => Date.now(), log = console } = {}) {
+export function createService({ baseUrl, dataDir, fetchImpl = fetch, now = () => Date.now(), log = console, gateToken = '' } = {}) {
   const store = createStore(dataDir);
   let assets = new Map(Object.entries(store.read('assets', {})));
   let matches = new Map(Object.entries(store.read('matches', {})));
@@ -78,7 +78,7 @@ export function createService({ baseUrl, dataDir, fetchImpl = fetch, now = () =>
     if (polling) return polling;
     polling = (async () => {
       const startedAt = new Date(now()).toISOString();
-      const pulled = await fetchEvents({ baseUrl, fetchImpl });
+      const pulled = await fetchEvents({ baseUrl, fetchImpl, gateToken });
       events = pulled.events;
       feedStatus = pulled.status;
       const current = matchAll(events, [...assets.values()]);

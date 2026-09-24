@@ -2,6 +2,10 @@
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const pct = (v) => (v == null ? '—' : `${Math.round(v * 100)}%`);
 const mins = (s) => (s == null ? '—' : `${(s / 60).toFixed(1)} min`);
+// Corridor travel time is estimated as length ÷ mean sampled speed. (Summing
+// TomTom's per-segment travel times overstates it: segments are longer than
+// the spacing between sample points.)
+const travelS = (lengthKm, speedKmh) => (lengthKm && speedKmh ? (lengthKm / speedKmh) * 3600 : null);
 const ist = (iso) => new Date(Date.parse(iso) + 330 * 60_000).toISOString().slice(5, 16).replace('T', ' ');
 
 function lineChart(series, { width = 900, height = 220, key = 'speed_ratio', notes = [] } = {}) {
@@ -25,7 +29,7 @@ export function renderReport({ corridor, series, latest, notes, comparison, wind
        <p class="muted">Before: ${esc(windows.a)} · During: ${esc(windows.b)} · same time-of-day slots, ${tz}. Speed ratio is live speed ÷ free-flow speed over the corridor's sample points; 100% is an empty road.</p>
        ${comparison.worst ? `<p class="headline">Worst slot ${comparison.worst.label}: ${pct(comparison.worst.before)} → ${pct(comparison.worst.during)} (${comparison.worst.change >= 0 ? '+' : ''}${Math.round(comparison.worst.change * 100)} points). Mean change across matching slots: ${comparison.meanChange == null ? '—' : `${comparison.meanChange >= 0 ? '+' : ''}${Math.round(comparison.meanChange * 100)} points`}.</p>` : '<p class="muted">No overlapping time slots yet.</p>'}
        <table><thead><tr><th>Slot</th><th>Before</th><th>During</th><th>Change</th><th>Travel before</th><th>Travel during</th><th>Samples</th></tr></thead><tbody>
-       ${comparison.rows.map((r) => `<tr class="${r.change < -0.15 ? 'bad' : r.change > 0.1 ? 'good' : ''}"><td>${r.label}</td><td>${pct(r.before)}</td><td>${pct(r.during)}</td><td>${r.change >= 0 ? '+' : ''}${Math.round(r.change * 100)}</td><td>${mins(r.beforeTravelS)}</td><td>${mins(r.duringTravelS)}</td><td>${r.samplesBefore}/${r.samplesDuring}</td></tr>`).join('')}
+       ${comparison.rows.map((r) => `<tr class="${r.change < -0.15 ? 'bad' : r.change > 0.1 ? 'good' : ''}"><td>${r.label}</td><td>${pct(r.before)}</td><td>${pct(r.during)}</td><td>${r.change >= 0 ? '+' : ''}${Math.round(r.change * 100)}</td><td>${mins(travelS(corridor.lengthKm, r.beforeSpeed))}</td><td>${mins(travelS(corridor.lengthKm, r.duringSpeed))}</td><td>${r.samplesBefore}/${r.samplesDuring}</td></tr>`).join('')}
        </tbody></table>`
     : `<p class="muted">Add <code>?a=YYYY-MM-DD..YYYY-MM-DD&amp;b=YYYY-MM-DD..YYYY-MM-DD</code> to compare two periods slot by slot.</p>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(corridor.name)}</title>
@@ -41,7 +45,7 @@ tr.bad td{color:#ff7a8a}tr.good td{color:#7fe6a5}code{background:#1a2230;padding
 <div class="grid">
 <div class="tile"><span class="muted">Now (${last ? ist(last.ts) : '—'})</span><b>${pct(last?.speed_ratio)}</b><span class="muted">of free-flow speed</span></div>
 <div class="tile"><span class="muted">Mean speed</span><b>${last?.mean_speed == null ? '—' : Math.round(last.mean_speed) + ' km/h'}</b><span class="muted">free flow ${last?.mean_free_flow == null ? '—' : Math.round(last.mean_free_flow) + ' km/h'}</span></div>
-<div class="tile"><span class="muted">Sampled travel time</span><b>${mins(last?.travel_time_s)}</b><span class="muted">free flow ${mins(last?.free_flow_travel_time_s)}</span></div>
+<div class="tile"><span class="muted">Est. travel time</span><b>${mins(travelS(corridor.lengthKm, last?.mean_speed))}</b><span class="muted">free flow ${mins(travelS(corridor.lengthKm, last?.mean_free_flow))}</span></div>
 <div class="tile"><span class="muted">Samples stored</span><b>${series.length}</b><span class="muted">${series.length ? ist(series[0].ts) : '—'} → ${last ? ist(last.ts) : '—'}</span></div>
 </div>
 <h2>Along the corridor, latest</h2>
@@ -52,6 +56,6 @@ ${cmp}
 <h2>Notes</h2>
 <p class="muted">Mark what changed and when (a closed U-turn, a diversion) so the chart explains itself: <code>POST /corridors/${esc(corridor.id)}/notes {"at":"2026-09-24T09:00:00Z","text":"U-turns closed"}</code></p>
 <ul>${notes.map((n) => `<li>${ist(n.at)} — ${esc(n.text)}</li>`).join('') || '<li class="muted">none yet</li>'}</ul>
-<p class="muted">Traffic flow data © TomTom. Ratios are averages over sample points and are not an official travel-time measurement.</p>
+<p class="muted">Traffic flow data © TomTom. Ratios are averages over sample points; travel time is corridor length ÷ mean sampled speed, not an official travel-time measurement.</p>
 </body></html>`;
 }

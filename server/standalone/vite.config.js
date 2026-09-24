@@ -3,6 +3,7 @@ import { defineConfig, loadEnv } from 'vite';
 import { createBrowserViteConfig } from '../../build/vite.js';
 import { localProviderPlugins } from '../providers/local.js';
 import { apiNotFoundPlugin } from './api-not-found.js';
+import { gatePlugin } from './gate.js';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 
@@ -13,7 +14,8 @@ export default defineConfig(({ mode }) => {
     if (process.env[key] === undefined) process.env[key] = value;
   }
   return createBrowserViteConfig({
-    plugins: [...localProviderPlugins(), apiNotFoundPlugin()],
+    // The login gate (off unless GEV_GATE_PASSWORD/GEV_GATE_USERS is set) must see every request first.
+    plugins: [gatePlugin(), ...localProviderPlugins(), apiNotFoundPlugin()],
     googleApiKey: process.env.GOOGLE_MAPS_API_KEY,
     cesiumToken: process.env.CESIUM_ION_TOKEN,
     host: process.env.HOST,

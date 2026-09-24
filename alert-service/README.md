@@ -19,7 +19,7 @@ An asset's `thresholds.min_severity` (default `warning`) filters what it is told
 ~/Desktop/GEV/run-alerts.sh   # this service on http://127.0.0.1:4180
 ```
 
-Environment: `PORT` (4180), `GEV_BASE_URL` (http://localhost:4173), `POLL_MINUTES` (10), `DATA_DIR` (./data), `ADMIN_TOKEN` (when set, every route except `/health` needs `Authorization: Bearer <token>`).
+Environment: `PORT` (4180), `GEV_BASE_URL` (http://localhost:4173), `GEV_GATE_PASSWORD` (when the GEV it reads from is behind its login gate), `POLL_MINUTES` (10), `DATA_DIR` (./data), `ADMIN_TOKEN` (when set, every route except `/health`, the reports and `/weekly` needs `Authorization: Bearer <token>`).
 
 ## API
 
@@ -48,3 +48,12 @@ Records how a road corridor flows so a change to it can be judged against how it
 - `POST /corridors/:id/notes {"at": ISO, "text": "U-turns closed"}` marks the chart.
 
 Speed ratio is live speed ÷ free-flow speed averaged over the sample points; 100% is an empty road. It is a comparison tool, not an official travel-time measurement. Traffic flow data © TomTom.
+
+## Weekly report
+
+Every corridor's week just completed (Monday to Sunday, IST) against everything recorded before it, by time of day: morning peak 07:30–10:30, midday, evening peak 16:30–20:30, night, plus a day-by-day row, the worst slot, closures and the week's notes. Email-safe HTML, one headline sentence per corridor.
+
+- `GET /weekly` — the last completed week, HTML. `GET /weekly/2026-W39` for a given ISO week; add `.json` for the numbers.
+- `POST /weekly/send?week=&send=1` — build now and email (admin token). `send=0` only builds.
+
+Email needs `SMTP_USER`, `SMTP_PASS` (a Gmail app password works; `SMTP_HOST` smtp.gmail.com and `SMTP_PORT` 465 are the defaults) and `REPORT_TO` (comma-separated). `REPORT_FROM` overrides the sender, `REPORT_BASE_URL` makes the "open the live report" links absolute, and `REPORT_DAY` (1 = Monday) with `REPORT_HOUR` (7, IST) sets when it goes out. Each week's summary is saved under `data/weekly/` so past reports stay readable.
