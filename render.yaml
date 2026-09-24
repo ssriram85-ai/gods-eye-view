@@ -41,7 +41,8 @@ services:
     region: singapore
     plan: starter
     rootDir: alert-service
-    buildCommand: npm ci
+    # No dependencies and no lockfile, so there is nothing to install.
+    buildCommand: echo "nothing to build"
     startCommand: npm start
     healthCheckPath: /health
     envVars:
