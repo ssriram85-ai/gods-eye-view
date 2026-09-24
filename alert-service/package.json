@@ -6,7 +6,7 @@
   "description": "Geofence alert service: matches God's Eye View hazard feeds (SACHET, JTWC, heat stress) against registered assets and delivers signed webhooks.",
   "engines": { "node": ">=24" },
   "scripts": {
-    "start": "node src/server.mjs",
-    "test": "node --test test/*.test.mjs"
+    "start": "node --no-warnings=ExperimentalWarning src/server.mjs",
+    "test": "node --no-warnings=ExperimentalWarning --test test/*.test.mjs"
   }
 }

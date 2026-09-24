@@ -36,3 +36,15 @@ Asset fields: `product` (slug), `id`, `tenant_id`, `name`, `latitude`, `longitud
 `POST webhook_url` with JSON `{ type, delivery_id, matched_at, asset, event, reason, severity }` where `type` is `hazard.matched`, `hazard.escalated` or `hazard.cleared`. Headers: `X-GEV-Delivery` (id, use it for idempotency), `X-GEV-Event` (the type), `X-GEV-Timestamp`, and `X-GEV-Signature: sha256=<HMAC-SHA256 of the raw body with the asset's webhook_secret>`. Deliveries retry three times on network errors and 5xx; a 4xx is final. Every attempt is appended to `data/deliveries.jsonl`.
 
 State lives in `data/assets.json` and `data/matches.json`; delete them to start clean.
+
+## Corridor monitor
+
+Records how a road corridor flows so a change to it can be judged against how it behaved before. Needs `TOMTOM_API_KEY` (the launcher reads GEV's saved key). On first start with a key it seeds OMR in both directions, Madhya Kailash ↔ Siruseri, twelve sample points each, and samples every `CORRIDOR_MINUTES` (15). Each point is one TomTom Flow Segment Data call, so two corridors of twelve points every fifteen minutes is about 2,300 calls a day, inside the free tier's 2,500.
+
+- `GET /corridors` · `POST /corridors {name, from:{lat,lon}, to:{lat,lon}, via?:[], points?}` · `DELETE /corridors/:id`
+- `POST /corridors/sample` (all) · `POST /corridors/:id/sample`
+- `GET /corridors/:id/report?hours=48&a=2026-09-10..2026-09-23&b=2026-09-24..2026-09-24` — the HTML report: live ratio, per-point strip, 48-hour chart, and a slot-by-slot before-vs-during table when `a` and `b` are given (IST calendar days).
+- `GET /corridors/:id/series?hours=` · `GET /corridors/:id/latest` · `GET /corridors/:id/compare?a=&b=`
+- `POST /corridors/:id/notes {"at": ISO, "text": "U-turns closed"}` marks the chart.
+
+Speed ratio is live speed ÷ free-flow speed averaged over the sample points; 100% is an empty road. It is a comparison tool, not an official travel-time measurement. Traffic flow data © TomTom.
