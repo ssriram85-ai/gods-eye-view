@@ -8,6 +8,9 @@
  *   GEV_GATE_USERS      "alice:pw1,bob:pw2" — named logins, revocable one at a time
  *   GEV_GATE_SECRET     cookie signing key; derived from the passwords when unset
  *   GEV_GATE_DAYS       session length in days (30)
+ *   GEV_GATE_REQUIRED   "1" on a hosted copy: refuse every request with 503
+ *                       until a password is configured, instead of serving
+ *                       the map open to the internet
  *
  * The gate never stores passwords hashed in a file; they live in the host's
  * environment, which is the only place a self-hoster edits anyway.
@@ -55,7 +58,25 @@ export function parseGateUsers(env = process.env) {
 
 export function createGate({ env = process.env, now = () => Date.now() } = {}) {
   const users = parseGateUsers(env);
-  if (!users.size) return null;
+  if (!users.size) {
+    if (!/^(1|true|yes)$/i.test(String(env.GEV_GATE_REQUIRED || '').trim()))
+      return null;
+    // Hosted and unconfigured: fail closed rather than open.
+    return {
+      users: [],
+      required: true,
+      async middleware(_req, res) {
+        res.writeHead(503, {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'no-store',
+          'Retry-After': '600',
+        });
+        res.end(
+          "This God's Eye View is not open yet: its operator has not set a login password (GEV_GATE_PASSWORD).",
+        );
+      },
+    };
+  }
   const secret =
     String(env.GEV_GATE_SECRET || '').trim() ||
     createHash('sha256')

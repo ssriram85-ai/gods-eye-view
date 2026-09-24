@@ -37,6 +37,9 @@ services:
         value: "10000"
       - key: TOMTOM_API_KEY
         sync: false
+      # Fail closed: until a password is set below, every request gets 503.
+      - key: GEV_GATE_REQUIRED
+        value: "1"
       - key: GEV_GATE_PASSWORD
         sync: false
       - key: GEV_GATE_USERS

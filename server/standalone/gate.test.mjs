@@ -23,8 +23,12 @@ const run = async (gate, request) => {
 };
 const cookieFrom = (response) => response.headers['Set-Cookie'].split(';')[0];
 
-test('gate is off without any password', () => {
+test('gate is off without any password, unless the host says it is required', async () => {
   assert.equal(createGate({ env: {} }), null);
+  const closed = await run(createGate({ env: { GEV_GATE_REQUIRED: '1' } }), req({ url: '/' }));
+  assert.equal(closed.passed, false);
+  assert.equal(closed.response.status, 503);
+  assert.match(closed.response.body, /not set a login password/);
   assert.deepEqual([...parseGateUsers({ GEV_GATE_USERS: 'Alice:pw1, bob:pw2,bad' }).keys()], ['alice', 'bob']);
 });
 
