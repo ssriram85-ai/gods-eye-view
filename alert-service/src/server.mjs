@@ -224,6 +224,31 @@ function weeklyTick() {
   runWeeklyReport({ week }).catch((e) => console.error('[weekly] failed:', e.message));
 }
 
+/**
+ * When the mail settings are new (or changed), prove them once without
+ * anyone running a command: send this week's report so far as a setup
+ * email. The result shows on /health; a failure is not retried until the
+ * settings change again.
+ */
+async function mailSelfTest() {
+  if (!mailConfigured()) return;
+  const state = mailState();
+  const hash = mailConfigHash();
+  if (state.verifiedHash === hash || state.verifyFailedHash === hash) return;
+  const week = weekBounds(lastCompletedWeek(Date.now() + 7 * DAY).key);
+  const { summaries, city, notes } = weeklyReport(week);
+  const at = new Date().toISOString();
+  try {
+    const { accepted } = await sendMail({ ...SMTP, to: REPORT_TO, subject: `Chennai roads · email set up (this week so far, ${week.key})`,
+      html: renderWeeklyHtml({ summaries, city, notes, week, baseUrl: REPORT_BASE_URL }), text: renderWeeklyText({ summaries, city, week, baseUrl: REPORT_BASE_URL }) });
+    weeklyStore.write('state', { ...mailState(), verifiedHash: hash, verifiedAt: at, verifyError: null, verifyFailedHash: null });
+    console.log(`[weekly] mail set up: test email accepted for ${accepted.join(', ')}`);
+  } catch (error) {
+    weeklyStore.write('state', { ...mailState(), verifyFailedHash: hash, verifyError: error.message, verifyAttemptAt: at });
+    console.error(`[weekly] mail set-up test failed: ${error.message}`);
+  }
+}
+
 function mailHealth() {
   const s = mailState();
   return {
@@ -237,6 +262,8 @@ function mailHealth() {
     lastAttemptAt: s.lastAttemptAt || null,
     lastError: s.lastError || null,
     waitingForNewSettings: Boolean(s.lastError && s.configHash === mailConfigHash() && (s.authFailed || (s.failures || 0) >= 3)),
+    setupTest: !mailConfigured() ? 'not configured' : s.verifiedHash === mailConfigHash() ? `passed ${s.verifiedAt}` : s.verifyFailedHash === mailConfigHash() ? `failed: ${s.verifyError}` : 'pending',
+    user: SMTP.user,
   };
 }
 
@@ -454,4 +481,5 @@ server.listen(PORT, HOST, () => {
   const mail = mailHealth();
   console.log(`[weekly] report at /weekly · ${mail.configured ? `emailed to ${REPORT_TO.length} recipient(s) via ${SMTP.host}:${SMTP.port}, ${mail.schedule}${mail.waitingForNewSettings ? ` · PAUSED after: ${mail.lastError}` : ''}` : 'email off (set SMTP_USER, SMTP_PASS, REPORT_TO)'}`);
   setInterval(weeklyTick, 60_000).unref();
+  setTimeout(() => mailSelfTest().catch((e) => console.error('[weekly] self-test:', e.message)), 90_000).unref();
 });
