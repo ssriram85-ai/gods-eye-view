@@ -31,14 +31,31 @@ const GEV_GATE_PASSWORD = (process.env.GEV_GATE_PASSWORD || '').trim();
 // Weekly report: rendered at /weekly, emailed on REPORT_DAY (1 = Monday) from
 // REPORT_HOUR IST when SMTP_USER/SMTP_PASS and REPORT_TO are set.
 const REPORT_TO = (process.env.REPORT_TO || '').split(',').map((s) => s.trim()).filter(Boolean);
-const SMTP = {
-  host: (process.env.SMTP_HOST || 'smtp.gmail.com').trim(),
-  port: Number(process.env.SMTP_PORT || 465),
-  user: (process.env.SMTP_USER || '').trim(),
-  // Pasted secrets often carry a trailing newline or space.
-  pass: (process.env.SMTP_PASS || '').trim(),
-  from: process.env.REPORT_FROM || `Chennai roads · GEV <${(process.env.SMTP_USER || '').trim()}>`,
+// Pasted settings often carry a trailing newline or space, or quote marks.
+const cleanSetting = (v) => {
+  const t = String(v || '').trim();
+  return /^(["']).*\1$/.test(t) && t.length >= 2 ? t.slice(1, -1) : t;
 };
+const RAW_PASS = process.env.SMTP_PASS || '';
+const SMTP = {
+  host: cleanSetting(process.env.SMTP_HOST) || 'smtp.gmail.com',
+  port: Number(cleanSetting(process.env.SMTP_PORT) || 465),
+  user: cleanSetting(process.env.SMTP_USER),
+  pass: cleanSetting(RAW_PASS),
+  from: process.env.REPORT_FROM || `Chennai roads · GEV <${cleanSetting(process.env.SMTP_USER)}>`,
+};
+/** What the service does with the mail settings, without revealing the password. */
+const mailSettingsReport = () => ({
+  host: SMTP.host,
+  port: SMTP.port,
+  user: SMTP.user,
+  userLooksLikeAnEmail: /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(SMTP.user),
+  passwordCharacters: SMTP.pass.length,
+  passwordHadSpacesOrNewlinesAtTheEnds: RAW_PASS !== RAW_PASS.trim(),
+  passwordHadQuoteMarks: RAW_PASS.trim() !== SMTP.pass,
+  passwordHasNonAsciiCharacters: /[^\x20-\x7e]/.test(SMTP.pass),
+  recipients: REPORT_TO,
+});
 const REPORT_BASE_URL = (process.env.REPORT_BASE_URL || '').replace(/\/$/, '');
 const REPORT_DAY = Number(process.env.REPORT_DAY ?? 1);
 const REPORT_HOUR = Number(process.env.REPORT_HOUR ?? 7);
@@ -274,6 +291,7 @@ async function readJson(req) {
 // With ADMIN_TOKEN set, the public pages and reads of recorded data stay
 // open (they are meant to be shared and cost no quota); everything that
 // registers, deletes, samples, polls or sends needs the token.
+// /mail/check and /weekly/send are admin-only (not in PUBLIC_READ).
 const PUBLIC_READ = /^\/(|summary|health|incidents|weekly(\/\d{4}-W\d{2}(\.json)?)?|corridors(\/[a-z0-9-]+(\/(report|latest|series|compare|travel|tips))?)?)$/;
 const authorized = (req) =>
   !ADMIN_TOKEN ||
@@ -320,6 +338,16 @@ const server = createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/poll') return json(res, 200, await service.poll());
     if (req.method === 'POST' && url.pathname === '/incidents/poll') return json(res, 200, await pollIncidents());
 
+    // ---- mail check: log in to the mail server and stop, no email sent ----
+    if (req.method === 'POST' && url.pathname === '/mail/check') {
+      const settings = mailSettingsReport();
+      try {
+        await sendMail({ ...SMTP, to: REPORT_TO.length ? REPORT_TO : [SMTP.user], subject: 'check', html: '<p/>', loginOnly: true });
+        return json(res, 200, { ok: true, login: 'accepted', settings });
+      } catch (error) {
+        return json(res, 200, { ok: false, error: error.message, settings });
+      }
+    }
     // ---- weekly report ----
     if (req.method === 'POST' && url.pathname === '/weekly/send') {
       const week = url.searchParams.get('week') ? weekBounds(url.searchParams.get('week')) : lastCompletedWeek();

@@ -49,7 +49,7 @@ export function buildMessage({ from, to, subject, text, html, date = new Date(),
  * Send one message. `mode` is 'tls' (implicit, port 465), 'starttls' (587)
  * or 'plain' (tests only). Resolves with the accepted recipients.
  */
-export async function sendMail({ host, port = 465, user, pass, from, to, subject, text, html, mode, timeoutMs = 30_000, connect }) {
+export async function sendMail({ host, port = 465, user, pass, from, to, subject, text, html, mode, timeoutMs = 30_000, connect, loginOnly = false }) {
   if (!host || !from || !to?.length) throw new Error('mail: host, from and to are required');
   const recipients = (Array.isArray(to) ? to : [to]).map(addr);
   const kind = mode || (port === 587 ? 'starttls' : 'tls');
@@ -102,6 +102,10 @@ export async function sendMail({ host, port = 465, user, pass, from, to, subject
       await cmd('AUTH LOGIN', [334]);
       await cmd(b64(user), [334], 'username');
       await cmd(b64(pass || ''), [235], 'password');
+    }
+    if (loginOnly) {
+      await cmd('QUIT', [221]).catch(() => {});
+      return { accepted: [], login: true };
     }
     await cmd(`MAIL FROM:<${addr(from)}>`, [250]);
     const accepted = [];

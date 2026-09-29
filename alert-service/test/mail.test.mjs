@@ -70,3 +70,15 @@ test('a rejected login is reported as an error, not swallowed', async () => {
     server.close();
   }
 });
+
+test('loginOnly stops after a successful login without sending', async () => {
+  const { server, port, seen } = await fakeSmtp();
+  try {
+    const result = await sendMail({ host: '127.0.0.1', port, user: 'user@example', pass: 'app-pass', from: 'a@example', to: 'b@example', subject: 's', html: '<p/>', mode: 'plain', loginOnly: true, connect: () => connect({ host: '127.0.0.1', port }) });
+    assert.equal(result.login, true);
+    assert.ok(!seen.commands.some((c) => c.startsWith('MAIL FROM')));
+    assert.equal(seen.data, '');
+  } finally {
+    server.close();
+  }
+});
