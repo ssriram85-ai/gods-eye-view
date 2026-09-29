@@ -37,6 +37,14 @@ services:
         value: "10000"
       - key: TOMTOM_API_KEY
         sync: false
+      # Browser-side keys are baked in at build time, so a change needs a redeploy.
+      # CESIUM_ION_TOKEN adds world terrain and Google 3D buildings via ion.
+      - key: CESIUM_ION_TOKEN
+        sync: false
+      - key: FIRMS_MAP_KEY
+        sync: false
+      - key: AISSTREAM_API_KEY
+        sync: false
       # Fail closed: until a password is set below, every request gets 503.
       - key: GEV_GATE_REQUIRED
         value: "1"
