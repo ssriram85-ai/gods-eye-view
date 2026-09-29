@@ -154,6 +154,9 @@ export function createService({ baseUrl, dataDir, fetchImpl = fetch, now = () =>
         .map(([key, record]) => ({ key, ...record, event_detail: publicEvent(events.find((e) => e.id === record.event) || { id: record.event }) }));
     },
     listEvents: () => events.map(publicEvent),
+    /** Events with geometry, for server-side rendering only (never sent as-is to clients). */
+    rawEvents: () => events,
+    feedStatus: () => feedStatus,
     health: () => ({ ok: true, base_url: baseUrl, assets: assets.size, matches: matches.size, events: events.length, last_poll: lastPoll, feeds: feedStatus }),
   };
 }

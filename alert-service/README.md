@@ -37,23 +37,42 @@ Asset fields: `product` (slug), `id`, `tenant_id`, `name`, `latitude`, `longitud
 
 State lives in `data/assets.json` and `data/matches.json`; delete them to start clean.
 
-## Corridor monitor
+## Road monitor
 
-Records how a road corridor flows so a change to it can be judged against how it behaved before. Needs `TOMTOM_API_KEY` (the launcher reads GEV's saved key). On first start with a key it seeds OMR in both directions, Madhya Kailash ↔ Siruseri, twelve sample points each, and samples every `CORRIDOR_MINUTES` (15). Each point is one TomTom Flow Segment Data call, so two corridors of twelve points every fifteen minutes is about 2,300 calls a day, inside the free tier's 2,500.
+Records how long named stretches of Chennai's main roads take, every `CORRIDOR_MINUTES` (15), in both directions:
 
-- `GET /corridors` · `POST /corridors {name, from:{lat,lon}, to:{lat,lon}, via?:[], points?}` · `DELETE /corridors/:id`
-- `POST /corridors/sample` (all) · `POST /corridors/:id/sample`
-- `GET /corridors/:id/report?hours=48&a=2026-09-10..2026-09-23&b=2026-09-24..2026-09-24` — the HTML report: live ratio, per-point strip, 48-hour chart, and a slot-by-slot before-vs-during table when `a` and `b` are given (IST calendar days).
-- `GET /corridors/:id/series?hours=` · `GET /corridors/:id/latest` · `GET /corridors/:id/compare?a=&b=`
-- `POST /corridors/:id/notes {"at": ISO, "text": "U-turns closed"}` marks the chart.
+| Road | Outbound stops |
+|---|---|
+| OMR | Madhya Kailash, Tidel Park, Perungudi, Thoraipakkam, Sholinganallur, Navalur, Siruseri |
+| Anna Salai | Kathipara, Saidapet, Nandanam, Teynampet, Gemini, Spencer Plaza, Anna Statue |
+| GST Road | Kathipara, Airport, Pallavaram, Chromepet, Tambaram, Perungalathur, Vandalur |
+| ECR | Thiruvanmiyur, Kottivakkam, Neelankarai, Injambakkam, Akkarai, Uthandi |
 
-Speed ratio is live speed ÷ free-flow speed averaged over the sample points; 100% is an empty road. It is a comparison tool, not an official travel-time measurement. Traffic flow data © TomTom.
+Each sample is one TomTom routing call per road and direction, with live traffic, split at the stops: live minutes, TomTom's usual minutes for this hour, the empty-road minutes (still with signals), and where the route's jams are. Each road is routed end to end once and the stops are snapped onto that path in order, so a stop on a side street or the far carriageway cannot add a loop. Eight corridors every fifteen minutes is 768 calls a day.
+
+This replaced point sampling of TomTom Flow Segment Data on 29 Sep 2026: on OMR the flow API returns one segment for most of the road, so twelve points collapsed into two or three averaged readings and local jams vanished. The earlier point series is kept and shown on the OMR reports.
+
+- `GET /` — the public "Chennai roads today" page: every road now vs usual vs empty road, the slowest stretch, a departure tip, Tamil Nadu alerts, current incidents and trouble spots. Built from stored data only; visitors cost no quota.
+- `GET /corridors` · `POST /corridors {name, stops: [{name, lat, lon}, ...]}` · `DELETE /corridors/:id`
+- `GET /corridors/:id/report?hours=48` — minutes per stretch, the whole-road chart, typical weekday by departure time, advice.
+- `GET /corridors/:id/tips` — the same advice as JSON, with weekday and weekend profiles. `GET /corridors/:id/travel?hours=` — raw totals.
+- `POST /corridors/sample` · `POST /corridors/:id/sample` · `POST /corridors/:id/notes {"at": ISO, "text": "..."}`
+
+Advice (worst time, best time to leave in the morning and evening windows, which stretch carries the delay, weekend contrast) waits until two weekdays are recorded for a time slot.
+
+## Incidents and trouble spots
+
+Every `INCIDENT_MINUTES` (15) the service records TomTom's live incidents for the Chennai box (`INCIDENT_BBOX`, default `80.0,12.75,80.35,13.25`): accidents, jams, closures, roadworks, flooding, breakdowns. Each incident is kept once with first and last sighting. Trouble spots group incidents into ~330 m cells, weighting accidents 5, flooding 3, breakdowns 2 and a major jam 1 per day; planned closures and roadworks do not count. They show where trouble recurs; they are not official accident records, and official crash locations from the traffic police would sharpen them. `GET /incidents?days=30` returns current incidents and trouble spots.
+
+On a laptop, set `CORRIDOR_MINUTES=0` and `INCIDENT_MINUTES=0` when a hosted copy records with the same TomTom key (`run-alerts.sh` does).
 
 ## Weekly report
 
-Every corridor's week just completed (Monday to Sunday, IST) against everything recorded before it, by time of day: morning peak 07:30–10:30, midday, evening peak 16:30–20:30, night, plus a day-by-day row, the worst slot, closures and the week's notes. Email-safe HTML, one headline sentence per corridor.
+Each road and direction for the week just completed (Monday to Sunday, IST): weekday morning and evening peak minutes, the worst drive and when, the change from the week before, the stretch carrying the delay, departure advice, plus the city's incidents and trouble spots and the week's notes. Email-safe HTML, one headline sentence per corridor.
 
 - `GET /weekly` — the last completed week, HTML. `GET /weekly/2026-W39` for a given ISO week; add `.json` for the numbers.
 - `POST /weekly/send?week=&send=1` — build now and email (admin token). `send=0` only builds.
 
-Email needs `SMTP_USER`, `SMTP_PASS` (a Gmail app password works; `SMTP_HOST` smtp.gmail.com and `SMTP_PORT` 465 are the defaults) and `REPORT_TO` (comma-separated). `REPORT_FROM` overrides the sender, `REPORT_BASE_URL` makes the "open the live report" links absolute, and `REPORT_DAY` (1 = Monday) with `REPORT_HOUR` (7, IST) sets when it goes out. Each week's summary is saved under `data/weekly/` so past reports stay readable.
+Email needs `SMTP_USER`, `SMTP_PASS` (for Hostinger: the mailbox password, with `SMTP_HOST` smtp.hostinger.com and `SMTP_PORT` 465) (a Gmail app password works; `SMTP_HOST` smtp.gmail.com and `SMTP_PORT` 465 are the defaults) and `REPORT_TO` (comma-separated). `REPORT_FROM` overrides the sender, `REPORT_BASE_URL` makes the "open the live report" links absolute, and `REPORT_DAY` (1 = Monday) with `REPORT_HOUR` (7, IST) sets when it goes out. Each week's summary is saved under `data/weekly/` so past reports stay readable.
+
+If sending fails the service waits 30 minutes before trying again; after a login failure (or three failures) it stops until the mail settings change, so a wrong password cannot get the mailbox locked. `GET /health` shows the mail settings in use (never the password), the last attempt and the last error.

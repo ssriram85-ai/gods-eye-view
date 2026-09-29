@@ -159,7 +159,13 @@ export class ShareLinkManager {
    * Parse URL hash on page load. Returns parsed state or null.
    */
   parseInitialHash() {
-    const hash = window.location.hash.slice(1);
+    // A hosted copy can open on a chosen place and layer set: VITE_GEV_HOME_VIEW
+    // holds a share-link hash (without '#') used when the URL carries none.
+    const hash =
+      window.location.hash.slice(1) ||
+      String(import.meta.env?.VITE_GEV_HOME_VIEW || '')
+        .trim()
+        .replace(/^#/, '');
     if (!hash) return null;
 
     const params = new URLSearchParams(hash);

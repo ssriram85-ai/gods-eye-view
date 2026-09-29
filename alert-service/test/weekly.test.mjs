@@ -4,89 +4,92 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCorridorStore } from '../src/corridor.mjs';
-import { isoWeekKey, weekBounds, lastCompletedWeek, summarizeWeek, headline, renderWeeklyHtml, renderWeeklyText, PERIODS } from '../src/weekly.mjs';
+import { createTravelStore } from '../src/travel.mjs';
+import { createIncidentStore, normalizeIncident } from '../src/incidents.mjs';
+import { isoWeekKey, weekBounds, lastCompletedWeek, previousWeek, summarizeWeek, summarizeCity, headline, renderWeeklyHtml, renderWeeklyText } from '../src/weekly.mjs';
 
-const IST = 330 * 60_000;
 const DAY = 86_400_000;
 
 test('ISO week keys and bounds follow IST calendar weeks', () => {
-  // 2026-09-24 is a Thursday in ISO week 39; that week runs Mon 21 → Sun 27 Sep.
   const w = weekBounds('2026-W39');
-  assert.equal(w.start, '2026-09-20T18:30:00.000Z'); // Monday 00:00 IST
+  assert.equal(w.start, '2026-09-20T18:30:00.000Z');
   assert.equal(w.end, '2026-09-27T18:30:00.000Z');
   assert.equal(w.label, '2026-09-21 → 2026-09-27');
   assert.equal(isoWeekKey(Date.UTC(2026, 8, 21)), '2026-W39');
   assert.equal(isoWeekKey(Date.UTC(2026, 0, 5)), '2026-W02');
   assert.equal(weekBounds('2026-W99'), null);
-  // Asked on Monday 28 Sep 07:00 IST, the last completed week is W39.
   assert.equal(lastCompletedWeek(Date.parse('2026-09-28T01:30:00Z')).key, '2026-W39');
-  // Asked on Sunday 27 Sep 23:00 IST, W39 has not ended: W38.
   assert.equal(lastCompletedWeek(Date.parse('2026-09-27T17:30:00Z')).key, '2026-W38');
+  assert.equal(previousWeek(w).key, '2026-W38');
 });
 
-/** Fill a store: baseline week at ratio 0.8 all day, report week slower in the evening only. */
+/** Two weeks of a three-section road: evening peak is 4 min worse in the second week. */
 function seeded() {
-  const store = createCorridorStore(join(mkdtempSync(join(tmpdir(), 'weekly-')), 'c.db'));
-  const corridor = store.saveCorridor({ id: 'omr-south', name: 'OMR southbound', definition: {}, points: [{}, {}], lengthKm: 20, routeTravelTimeS: 1500 });
-  const week = weekBounds('2026-W39');
-  const start = Date.parse(week.start) - 7 * DAY; // one baseline week before
-  for (let t = start; t < Date.parse(week.end); t += 30 * 60_000) {
-    const local = (t + IST) % DAY;
-    const evening = local >= 990 * 60_000 && local < 1230 * 60_000;
-    const inWeek = t >= Date.parse(week.start);
-    const ratio = inWeek && evening ? 0.5 : 0.8;
-    const rows = [0, 1].map((i) => ({ pointIndex: i, currentSpeed: 60 * ratio, freeFlowSpeed: 60, currentTravelTime: 600 / ratio, freeFlowTravelTime: 600, confidence: 0.9, roadClosure: false, frc: 'FRC2' }));
-    store.saveSamples(corridor.id, { ts: new Date(t).toISOString(), rows });
+  const dir = mkdtempSync(join(tmpdir(), 'weekly-'));
+  const corridors = createCorridorStore(join(dir, 'c.db'));
+  const travel = createTravelStore(corridors.db);
+  const incidents = createIncidentStore(corridors.db);
+  const corridor = { id: 'omr-south', name: 'OMR southbound · Madhya Kailash → Siruseri', lengthKm: 22, definition: { road: 'omr', version: 2, sections: [{ from: 'Madhya Kailash', to: 'Perungudi', lengthKm: 6 }, { from: 'Perungudi', to: 'Sholinganallur', lengthKm: 8 }, { from: 'Sholinganallur', to: 'Siruseri', lengthKm: 8 }] } };
+  const start = Date.parse(weekBounds('2026-W39').start) - 7 * DAY;
+  for (let t = start; t < start + 14 * DAY; t += 30 * 60_000) {
+    const local = new Date(t + 330 * 60_000);
+    const min = local.getUTCHours() * 60 + local.getUTCMinutes();
+    const weekday = local.getUTCDay() >= 1 && local.getUTCDay() <= 5;
+    const second = t >= start + 7 * DAY;
+    const evening = weekday && min >= 990 && min < 1230;
+    const morning = weekday && min >= 450 && min < 630;
+    const extra = [0, evening ? 10 + (second ? 4 : 0) : morning ? 5 : 0, evening ? 2 : 0];
+    const rows = [10, 12, 14].map((free, i) => ({ leg: i, lengthM: 6000, travelS: (free + extra[i]) * 60, noTrafficS: free * 60, historicS: free * 60, incidentsS: null, delayS: extra[i] * 60, detour: 0 }));
+    travel.save(corridor.id, { ts: new Date(t).toISOString(), rows, jams: evening ? [{ leg: 1, category: 'jam', magnitude: 3, delayS: 600, startKm: 9, endKm: 10, lat: 12.94, lon: 80.237 }] : [] });
   }
-  store.addNote(corridor.id, '2026-09-23T04:00:00.000Z', 'U-turns closed');
-  return { store, corridor, week };
+  const inc = (id, icon) => normalizeIncident({ geometry: { type: 'Point', coordinates: [80.2279, 12.901] }, properties: { id, iconCategory: icon, magnitudeOfDelay: 4, from: 'Sholinganallur', to: 'Karapakkam' } });
+  incidents.record([inc('a1', 1), inc('j1', 6)], '2026-09-23T13:00:00.000Z');
+  incidents.record([inc('a2', 1)], '2026-09-25T13:00:00.000Z');
+  return { travel, incidents, corridor, week: weekBounds('2026-W39') };
 }
 
-test('a week is summarized by period and day against the earlier baseline', () => {
-  const { store, corridor, week } = seeded();
-  const s = summarizeWeek({ store, corridor, week });
+test('a week is summarized by peak with the week before, tips and the jammed stretch', () => {
+  const { travel, corridor, week } = seeded();
+  const s = summarizeWeek({ travel, corridor, week });
   assert.equal(s.samples, 7 * 48);
-  assert.ok(s.coverage > 0.49 && s.coverage < 0.51, `coverage ${s.coverage}`);
-  assert.equal(s.baseline.samples, 7 * 48);
-  const by = Object.fromEntries(s.periods.map((p) => [p.id, p]));
-  assert.equal(Math.round(by.evening.speedRatio * 100), 50);
-  assert.equal(Math.round(by.evening.baselineRatio * 100), 80);
-  assert.equal(by.evening.changePoints, -30);
-  assert.equal(by.morning.changePoints, 0);
-  assert.equal(Math.round(by.evening.travelTimeS), 2400); // 2 points × 600 s / 0.5
-  assert.equal(s.worstSlot.change.toFixed(2), '-0.30');
-  assert.ok(s.worstSlot.label >= '16:30' && s.worstSlot.label < '20:30', s.worstSlot.label);
-  assert.equal(s.days.length, 7);
-  assert.ok(s.days.every((d) => d.samples === 48));
-  assert.equal(s.notes.length, 1);
-  assert.equal(PERIODS.length, 4);
-  assert.match(headline(s), /evening peak ran at 50% of free-flow speed \(40\.0 min over 20 km\)/);
-  assert.match(headline(s), /slower than the baseline/);
+  const eve = s.periods.find((p) => p.id === 'evening');
+  const morn = s.periods.find((p) => p.id === 'morning');
+  assert.equal(Math.round(eve.minutes), 36 + 14 + 2 - 0); // 36 free + 14 + 2
+  assert.equal(Math.round(eve.previousMinutes), 48);
+  assert.equal(Math.round(eve.changeMinutes), 4);
+  assert.equal(Math.round(eve.freeMinutes), 36);
+  assert.equal(eve.bottleneck.section, 'Perungudi → Sholinganallur');
+  assert.equal(Math.round(morn.minutes), 41);
+  assert.equal(s.mostJammed.section, 'Perungudi → Sholinganallur');
+  assert.ok(s.tips.some((t) => t.kind === 'depart' && t.window === 'evening'), JSON.stringify(s.tips));
+  assert.match(headline(s), /evening peak averaged 52 min for 22 km \(36 min on an empty road\)/);
+  assert.match(headline(s), /\+4 min vs last week/);
 });
 
-test('an empty week and a first week without baseline still render', () => {
-  const { store, corridor } = seeded();
-  const empty = summarizeWeek({ store, corridor, week: weekBounds('2026-W45') });
-  assert.equal(empty.samples, 0);
-  assert.match(headline(empty), /No readings/);
-  const first = summarizeWeek({ store, corridor, week: weekBounds('2026-W38') });
-  assert.equal(first.baseline, null);
-  assert.equal(first.periods[0].changePoints, null);
-  assert.match(headline(first), /no earlier weeks yet/);
-  const html = renderWeeklyHtml({ summaries: [empty, first], week: weekBounds('2026-W38'), baseUrl: 'https://x.example' });
-  assert.match(html, /<table/);
-  assert.doesNotMatch(html, /<svg/);
-  assert.match(html, /https:\/\/x\.example\/corridors\/omr-south\/report\?hours=168/);
-});
-
-test('HTML and text reports carry the numbers and the live link with the comparison windows', () => {
-  const { store, corridor, week } = seeded();
-  const s = summarizeWeek({ store, corridor, week });
-  const html = renderWeeklyHtml({ summaries: [s], week, baseUrl: 'https://gev.example' });
+test('city incidents and trouble spots, and the rendered email', () => {
+  const { travel, incidents, corridor, week } = seeded();
+  const s = summarizeWeek({ travel, corridor, week });
+  const city = summarizeCity({ incidents, week });
+  assert.equal(city.accidents, 2);
+  assert.equal(city.hotspots[0].place, 'Sholinganallur → Karapakkam');
+  const html = renderWeeklyHtml({ summaries: [s], city, notes: [{ at: '2026-09-24T02:30:00.000Z', text: 'U-turns closed' }], week, baseUrl: 'https://gev.example' });
+  assert.match(html, /Chennai roads · week 2026-W39/);
+  assert.match(html, /OMR \(Rajiv Gandhi Salai\)/);
   assert.match(html, /Evening peak/);
-  assert.match(html, />-30</);
-  assert.match(html, /a=2026-09-14\.\.2026-09-20&amp;b=2026-09-21\.\.2026-09-27/);
+  assert.match(html, /\+4 min/);
+  assert.match(html, /2 accident reports/);
+  assert.match(html, /google\.com\/maps\?q=12\.901,80\.2279/);
   assert.match(html, /U-turns closed/);
-  const text = renderWeeklyText({ summaries: [s], week, baseUrl: 'https://gev.example' });
-  assert.match(text, /Evening peak 16:30–20:30: 50% this week vs 80% baseline \(-30\)/);
+  assert.doesNotMatch(html, /<svg/);
+  const text = renderWeeklyText({ summaries: [s], city, week, baseUrl: 'https://gev.example' });
+  assert.match(text, /Trouble spot: Sholinganallur → Karapakkam/);
+  assert.match(text, /Live page: https:\/\/gev\.example\//);
+});
+
+test('an empty week renders without failing', () => {
+  const { travel, corridor } = seeded();
+  const s = summarizeWeek({ travel, corridor, week: weekBounds('2026-W45') });
+  assert.equal(s.samples, 0);
+  assert.match(headline(s), /no readings this week/);
+  assert.match(renderWeeklyHtml({ summaries: [s], city: null, week: weekBounds('2026-W45') }), /Not enough days recorded/);
 });

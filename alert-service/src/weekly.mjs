@@ -1,27 +1,27 @@
 /**
- * Weekly corridor summary: the week just completed (Monday to Sunday, IST)
- * against everything recorded before it, by time of day. Rendered as
- * email-safe HTML (tables, inline styles, no SVG) so it reads in Gmail.
+ * Weekly roads report: for each monitored road and direction, the week
+ * just completed (Monday to Sunday, IST): how long the peaks took, when to
+ * leave instead, which stretch carries the delay, how it compares with the
+ * week before, plus the city's incidents and trouble spots. Email-safe
+ * HTML (tables, inline styles, no SVG) so it reads in any mail client.
  */
-import { profile, compareProfiles } from './corridor.mjs';
+import { travelProfile, commuterTips, istSlot, dayType } from './insights.mjs';
+import { hotspots } from './incidents.mjs';
 
 const IST_MIN = 330;
 const DAY = 86_400_000;
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
-/** Periods of the day, in minutes since midnight IST. */
+/** Weekday peak periods, in minutes since midnight IST. */
 export const PERIODS = Object.freeze([
   { id: 'morning', label: 'Morning peak', hours: '07:30–10:30', from: 450, to: 630 },
-  { id: 'midday', label: 'Midday', hours: '10:30–16:30', from: 630, to: 990 },
   { id: 'evening', label: 'Evening peak', hours: '16:30–20:30', from: 990, to: 1230 },
-  { id: 'night', label: 'Night', hours: '20:30–07:30', from: 1230, to: 450 },
 ]);
 
-const inPeriod = (slot, p) => (p.from < p.to ? slot >= p.from && slot < p.to : slot >= p.from || slot < p.to);
-const localDay = (ms) => Math.floor((ms + IST_MIN * 60_000) / DAY); // IST calendar day number
+const localDay = (ms) => Math.floor((ms + IST_MIN * 60_000) / DAY);
 const toUtcIso = (localMs) => new Date(localMs - IST_MIN * 60_000).toISOString();
 
-/** ISO 8601 week key ("2026-W39") for the IST-local Monday given as ms-since-epoch in local frame. */
+/** ISO 8601 week key ("2026-W39") for an IST-local Monday given in the local frame. */
 export function isoWeekKey(mondayLocalMs) {
   const thursday = new Date(mondayLocalMs + 3 * DAY);
   const year = thursday.getUTCFullYear();
@@ -40,150 +40,172 @@ export function weekBounds(key) {
   const jan4 = Date.UTC(year, 0, 4);
   const week1Monday = jan4 - ((new Date(jan4).getUTCDay() + 6) % 7) * DAY;
   const mondayLocal = week1Monday + (week - 1) * 7 * DAY;
-  return { key, start: toUtcIso(mondayLocal), end: toUtcIso(mondayLocal + 7 * DAY), label: `${new Date(mondayLocal).toISOString().slice(0, 10)} → ${new Date(mondayLocal + 6 * DAY).toISOString().slice(0, 10)}` };
+  return {
+    key,
+    start: toUtcIso(mondayLocal),
+    end: toUtcIso(mondayLocal + 7 * DAY),
+    label: `${new Date(mondayLocal).toISOString().slice(0, 10)} → ${new Date(mondayLocal + 6 * DAY).toISOString().slice(0, 10)}`,
+  };
 }
 
 /** The most recent week that has fully ended, IST, as of `atMs`. */
 export function lastCompletedWeek(atMs = Date.now()) {
-  const today = localDay(atMs) * DAY; // IST midnight today, local frame
+  const today = localDay(atMs) * DAY;
   const thisMonday = today - ((new Date(today).getUTCDay() + 6) % 7) * DAY;
   return weekBounds(isoWeekKey(thisMonday - 7 * DAY));
 }
 
-/** Corridor travel time estimate: length ÷ mean sampled speed, in seconds. */
-const travelS = (lengthKm, speedKmh) => (lengthKm && speedKmh ? (lengthKm / speedKmh) * 3600 : null);
+export function previousWeek(week) {
+  return weekBounds(isoWeekKey(Date.parse(week.start) + IST_MIN * 60_000 - 7 * DAY));
+}
 
-const mean = (rows, key, weight = 'samples') => {
-  let n = 0, s = 0;
+/** Mean whole-corridor minutes of complete weekday samples inside a period. */
+function periodStats(rows, sections, period) {
+  const bySample = new Map();
   for (const r of rows) {
-    if (r[key] == null) continue;
-    const w = r[weight] || 1;
-    n += w;
-    s += r[key] * w;
+    if (r.travel_s == null) continue;
+    const s = bySample.get(r.ts) || { ts: r.ts, travel: 0, free: 0, legs: [], n: 0 };
+    s.travel += r.travel_s;
+    s.free += r.no_traffic_s || 0;
+    s.legs[r.leg] = r.travel_s - (r.no_traffic_s || 0);
+    s.n++;
+    bySample.set(r.ts, s);
   }
-  return n ? s / n : null;
-};
-
-/** Summarize one corridor for one week against all earlier samples. */
-export function summarizeWeek({ store, corridor, week }) {
-  const weekRows = store.series(corridor.id, week.start, week.end);
-  const baselineRows = store.series(corridor.id, '2000-01-01T00:00:00.000Z', week.start);
-  const weekProfile = profile(weekRows);
-  const baselineProfile = profile(baselineRows);
-  const comparison = baselineProfile.length && weekProfile.length ? compareProfiles(baselineProfile, weekProfile) : null;
-
-  const periods = PERIODS.map((p) => {
-    const w = weekProfile.filter((s) => inPeriod(s.slot, p));
-    const b = baselineProfile.filter((s) => inPeriod(s.slot, p));
-    const ratio = mean(w, 'speedRatio'), base = mean(b, 'speedRatio');
-    return { ...p, speedRatio: ratio, travelTimeS: travelS(corridor.lengthKm, mean(w, 'meanSpeed')), baselineRatio: base, baselineTravelTimeS: travelS(corridor.lengthKm, mean(b, 'meanSpeed')),
-      changePoints: ratio != null && base != null ? Math.round((ratio - base) * 100) : null, samples: w.reduce((n, s) => n + s.samples, 0) };
-  });
-
+  const inside = [...bySample.values()].filter((s) => s.n === sections && dayType(s.ts) === 'weekday' && istSlot(s.ts, 15) >= period.from && istSlot(s.ts, 15) < period.to);
+  if (!inside.length) return null;
+  const minutes = inside.reduce((a, s) => a + s.travel, 0) / inside.length / 60;
+  const free = inside.reduce((a, s) => a + s.free, 0) / inside.length / 60;
+  const worst = inside.reduce((w, s) => (s.travel > w.travel ? s : w));
+  const extraByLeg = Array.from({ length: sections }, (_, i) => inside.reduce((a, s) => a + (s.legs[i] || 0), 0) / inside.length / 60);
   const byDay = new Map();
-  for (const r of weekRows) {
-    if (r.speed_ratio == null) continue;
-    const day = DAYS[(new Date(Date.parse(r.ts) + IST_MIN * 60_000).getUTCDay() + 6) % 7];
-    const b = byDay.get(day) || { day, n: 0, ratio: 0, speed: 0 };
+  for (const s of inside) {
+    const d = DAYS[(new Date(Date.parse(s.ts) + IST_MIN * 60_000).getUTCDay() + 6) % 7];
+    const b = byDay.get(d) || { day: d, n: 0, travel: 0 };
     b.n++;
-    b.ratio += r.speed_ratio;
-    b.speed += r.mean_speed || 0;
-    byDay.set(day, b);
+    b.travel += s.travel;
+    byDay.set(d, b);
   }
-  const days = DAYS.map((day) => {
-    const b = byDay.get(day);
-    return { day, samples: b?.n || 0, speedRatio: b ? b.ratio / b.n : null, travelTimeS: b ? travelS(corridor.lengthKm, b.speed / b.n) : null };
-  });
-  const worstDay = days.filter((d) => d.speedRatio != null).reduce((w, d) => (w === null || d.speedRatio < w.speedRatio ? d : w), null);
+  const days = [...byDay.values()].map((b) => ({ day: b.day, minutes: b.travel / b.n / 60 }));
+  return { minutes, freeMinutes: free, worstMinutes: worst.travel / 60, worstAt: worst.ts, extraByLeg, days, samples: inside.length };
+}
 
-  const expected = 7 * Math.round(DAY / (15 * 60_000));
-  const first = baselineRows[0]?.ts || weekRows[0]?.ts || null;
+/** Summarize one corridor for one week, with the previous week for comparison. */
+export function summarizeWeek({ travel, corridor, week, prev = previousWeek(week) }) {
+  const sections = corridor.definition?.sections || [];
+  const rows = travel.rows(corridor.id, week.start, week.end);
+  const prevRows = prev ? travel.rows(corridor.id, prev.start, prev.end) : [];
+  const samples = new Set(rows.map((r) => r.ts)).size;
+  const profile = travelProfile(rows, { sections: sections.length });
+  const { tips, enoughData } = commuterTips(corridor, profile, { minDays: 2 });
+  const periods = PERIODS.map((p) => {
+    const now = periodStats(rows, sections.length, p);
+    const before = periodStats(prevRows, sections.length, p);
+    const top = now ? now.extraByLeg.map((x, i) => ({ i, x })).sort((a, b) => b.x - a.x)[0] : null;
+    return {
+      ...p,
+      minutes: now?.minutes ?? null,
+      freeMinutes: now?.freeMinutes ?? null,
+      worstMinutes: now?.worstMinutes ?? null,
+      worstAt: now?.worstAt ?? null,
+      previousMinutes: before?.minutes ?? null,
+      changeMinutes: now && before ? now.minutes - before.minutes : null,
+      worstDay: now?.days.length ? now.days.reduce((w, d) => (d.minutes > w.minutes ? d : w)) : null,
+      bottleneck: top && sections[top.i] && top.x >= 1 ? { section: `${sections[top.i].from} → ${sections[top.i].to}`, extraMinutes: top.x } : null,
+    };
+  });
+  const jams = travel.jams(corridor.id, week.start, week.end).filter((j) => j.category === 'jam');
+  const jamBySection = new Map();
+  for (const j of jams) if (j.leg != null) jamBySection.set(j.leg, (jamBySection.get(j.leg) || 0) + 1);
+  const mostJammed = [...jamBySection.entries()].sort((a, b) => b[1] - a[1])[0];
   return {
-    corridor: { id: corridor.id, name: corridor.name, lengthKm: corridor.lengthKm },
+    corridor: { id: corridor.id, name: corridor.name, lengthKm: corridor.lengthKm, road: corridor.definition?.road },
     week,
-    samples: weekRows.length,
-    coverage: Math.min(1, weekRows.length / expected),
-    overall: { speedRatio: mean(weekProfile, 'speedRatio'), travelTimeS: travelS(corridor.lengthKm, mean(weekProfile, 'meanSpeed')), baselineRatio: mean(baselineProfile, 'speedRatio'), baselineTravelTimeS: travelS(corridor.lengthKm, mean(baselineProfile, 'meanSpeed')) },
+    samples,
+    coverage: Math.min(1, samples / (7 * 96)),
     periods,
-    days,
-    worstDay,
-    worstSlot: comparison?.worst || null,
-    meanChangePoints: comparison?.meanChange == null ? null : Math.round(comparison.meanChange * 100),
-    closures: weekRows.reduce((n, r) => n + (r.closures || 0), 0),
-    baseline: baselineRows.length ? { samples: baselineRows.length, from: first, to: week.start } : null,
-    notes: store.listNotes(corridor.id).filter((n) => n.at >= week.start && n.at < week.end),
+    tips,
+    enoughData,
+    jamReports: jams.length,
+    mostJammed: mostJammed && sections[mostJammed[0]] ? { section: `${sections[mostJammed[0]].from} → ${sections[mostJammed[0]].to}`, reports: mostJammed[1] } : null,
   };
+}
+
+/** City-wide incident summary for the week, and trouble spots over the last 30 days. */
+export function summarizeCity({ incidents, week }) {
+  if (!incidents) return null;
+  const counts = incidents.counts(week.start).filter((c) => c.n);
+  const inWeek = incidents.since(week.start).filter((i) => i.first_seen < week.end);
+  const accidents = inWeek.filter((i) => i.category === 'accident');
+  const spots = hotspots(incidents.since(new Date(Date.parse(week.end) - 30 * DAY).toISOString()), { limit: 8 });
+  return { counts, accidents: accidents.length, flooding: inWeek.filter((i) => i.category === 'flooding').length, hotspots: spots, since: incidents.firstSeen() };
 }
 
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-const pct = (v) => (v == null ? '—' : `${Math.round(v * 100)}%`);
-const mins = (s) => (s == null ? '—' : `${(s / 60).toFixed(1)} min`);
-const signed = (n) => (n == null ? '—' : `${n > 0 ? '+' : ''}${n}`);
-const tone = (n) => (n == null ? '#555' : n <= -10 ? '#c0392b' : n >= 8 ? '#1e8449' : '#555');
-const istDate = (iso) => new Date(Date.parse(iso) + IST_MIN * 60_000).toISOString().slice(0, 10);
+const m = (v) => (v == null ? '—' : `${Math.round(v)} min`);
+const signedMin = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${Math.round(v)} min`);
+const tone = (v) => (v == null ? '#555' : v >= 3 ? '#c0392b' : v <= -3 ? '#1e8449' : '#555');
+const istTime = (iso) => new Date(Date.parse(iso) + IST_MIN * 60_000).toISOString().slice(11, 16);
+const istDay = (iso) => DAYS[(new Date(Date.parse(iso) + IST_MIN * 60_000).getUTCDay() + 6) % 7];
 
-/** One sentence a commissioner can read without the table. */
+/** One sentence per corridor that a commissioner can read without the table. */
 export function headline(s) {
-  if (!s.samples) return `No readings were recorded for ${s.corridor.name} this week.`;
-  const parts = [];
-  const evening = s.periods.find((p) => p.id === 'evening'), morning = s.periods.find((p) => p.id === 'morning');
-  const peak = [morning, evening].filter((p) => p?.speedRatio != null).sort((a, b) => a.speedRatio - b.speedRatio)[0];
-  if (peak) parts.push(`${peak.label.toLowerCase()} ran at ${pct(peak.speedRatio)} of free-flow speed (${mins(peak.travelTimeS)} over ${s.corridor.lengthKm} km)`);
-  if (s.meanChangePoints != null) {
-    const dir = s.meanChangePoints > 0 ? 'faster' : s.meanChangePoints < 0 ? 'slower' : 'unchanged';
-    parts.push(dir === 'unchanged' ? 'unchanged against the baseline' : `${Math.abs(s.meanChangePoints)} points ${dir} than the baseline across matching time slots`);
-  } else parts.push('no earlier weeks yet to compare against');
-  if (s.worstDay) parts.push(`worst day ${s.worstDay.day} at ${pct(s.worstDay.speedRatio)}`);
+  if (!s.samples) return `${s.corridor.name}: no readings this week.`;
+  const eve = s.periods.find((p) => p.id === 'evening'), morn = s.periods.find((p) => p.id === 'morning');
+  const peak = [morn, eve].filter((p) => p?.minutes != null).sort((a, b) => b.minutes - a.minutes)[0];
+  if (!peak) return `${s.corridor.name}: ${s.samples} readings, no complete weekday peak yet.`;
+  const parts = [`${peak.label.toLowerCase()} averaged ${m(peak.minutes)} for ${s.corridor.lengthKm} km (${m(peak.freeMinutes)} on an empty road)`];
+  if (peak.worstMinutes != null) parts.push(`worst ${m(peak.worstMinutes)} on ${istDay(peak.worstAt)} at ${istTime(peak.worstAt)}`);
+  if (peak.changeMinutes != null) parts.push(`${Math.abs(Math.round(peak.changeMinutes)) < 1 ? 'same as' : `${signedMin(peak.changeMinutes)} vs`} last week`);
   return `${s.corridor.name}: ${parts.join('; ')}.`;
 }
 
-/** Email-safe HTML for one or more corridor summaries. */
-export function renderWeeklyHtml({ summaries, week, baseUrl = '', generatedAt = new Date() }) {
-  const link = (s) => {
-    if (!baseUrl) return '';
-    const q = s.baseline ? `?hours=168&a=${istDate(s.baseline.from)}..${istDate(new Date(Date.parse(week.start) - 1).toISOString())}&b=${istDate(week.start)}..${istDate(new Date(Date.parse(week.end) - 1).toISOString())}` : '?hours=168';
-    return `<p style="margin:8px 0 0"><a href="${esc(baseUrl)}/corridors/${esc(s.corridor.id)}/report${esc(q)}" style="color:#1a5fb4">Open the live report for this corridor</a></p>`;
-  };
+/** Email-safe HTML for the week. */
+export function renderWeeklyHtml({ summaries, city, notes = [], week, baseUrl = '', generatedAt = new Date() }) {
   const td = 'padding:6px 8px;border-bottom:1px solid #e3e3e3;text-align:right;white-space:nowrap';
   const th = `${td};font-weight:600;color:#555;background:#f4f5f7`;
+  const link = (s) => (baseUrl ? `<a href="${esc(baseUrl)}/corridors/${esc(s.corridor.id)}/report?hours=168" style="color:#1a5fb4">live report</a>` : '');
   const section = (s) => `
-<div style="margin:0 0 28px">
-<h2 style="font-size:17px;margin:0 0 4px;color:#111">${esc(s.corridor.name)}</h2>
-<p style="margin:0 0 10px;color:#333">${esc(headline(s))}</p>
-<p style="margin:0 0 10px;color:#777;font-size:12px">${s.samples} readings this week (${Math.round(s.coverage * 100)}% of the planned every-15-minutes coverage)${s.baseline ? ` · baseline ${s.baseline.samples} readings from ${istDate(s.baseline.from)}` : ''}${s.closures ? ` · ${s.closures} closure flags` : ''}</p>
+<div style="margin:0 0 26px">
+<h3 style="font-size:15px;margin:0 0 4px;color:#111">${esc(s.corridor.name)}</h3>
+<p style="margin:0 0 8px;color:#333">${esc(headline(s))}</p>
+${s.tips.length ? `<ul style="margin:0 0 8px;padding-left:18px;color:#333">${s.tips.map((t) => `<li style="margin:0 0 3px">${esc(t.text)}</li>`).join('')}</ul>` : `<p style="margin:0 0 8px;color:#777;font-size:13px">Not enough days recorded yet for departure-time advice.</p>`}
 <table style="border-collapse:collapse;width:100%;font-size:13px" cellpadding="0" cellspacing="0">
-<tr><th style="${th};text-align:left">Period (IST)</th><th style="${th}">This week</th><th style="${th}">Baseline</th><th style="${th}">Change</th><th style="${th}">Travel, week</th><th style="${th}">Travel, baseline</th></tr>
-${s.periods.map((p) => `<tr><td style="${td};text-align:left">${p.label} <span style="color:#888">${p.hours}</span></td><td style="${td}">${pct(p.speedRatio)}</td><td style="${td}">${pct(p.baselineRatio)}</td><td style="${td};color:${tone(p.changePoints)};font-weight:600">${signed(p.changePoints)}</td><td style="${td}">${mins(p.travelTimeS)}</td><td style="${td}">${mins(p.baselineTravelTimeS)}</td></tr>`).join('')}
+<tr><th style="${th};text-align:left">Weekdays</th><th style="${th}">This week</th><th style="${th}">Worst</th><th style="${th}">Last week</th><th style="${th}">Change</th><th style="${th}">Empty road</th><th style="${th};text-align:left">Most delay</th></tr>
+${s.periods.map((p) => `<tr><td style="${td};text-align:left">${p.label} <span style="color:#888">${p.hours}</span></td><td style="${td}">${m(p.minutes)}</td><td style="${td}">${p.worstAt ? `${m(p.worstMinutes)} <span style="color:#888">${istDay(p.worstAt)} ${istTime(p.worstAt)}</span>` : '—'}</td><td style="${td}">${m(p.previousMinutes)}</td><td style="${td};color:${tone(p.changeMinutes)};font-weight:600">${signedMin(p.changeMinutes)}</td><td style="${td}">${m(p.freeMinutes)}</td><td style="${td};text-align:left">${p.bottleneck ? `${esc(p.bottleneck.section)} <span style="color:#888">+${Math.round(p.bottleneck.extraMinutes)}</span>` : '—'}</td></tr>`).join('')}
 </table>
-<table style="border-collapse:collapse;width:100%;font-size:13px;margin-top:10px" cellpadding="0" cellspacing="0">
-<tr>${s.days.map((d) => `<th style="${th}">${d.day}</th>`).join('')}</tr>
-<tr>${s.days.map((d) => `<td style="${td};${s.worstDay && d.day === s.worstDay.day ? 'color:#c0392b;font-weight:600' : ''}">${pct(d.speedRatio)}</td>`).join('')}</tr>
-</table>
-${s.worstSlot ? `<p style="margin:10px 0 0;color:#333;font-size:13px">Worst time slot against baseline: <b>${esc(s.worstSlot.label)}</b>, ${pct(s.worstSlot.before)} → ${pct(s.worstSlot.during)} (${signed(Math.round(s.worstSlot.change * 100))} points).</p>` : ''}
-${s.notes.length ? `<p style="margin:10px 0 0;font-size:13px;color:#333">Notes this week: ${s.notes.map((n) => `${istDate(n.at)} — ${esc(n.text)}`).join('; ')}</p>` : ''}
-${link(s)}
+<p style="margin:6px 0 0;color:#777;font-size:12px">${s.samples} readings (${Math.round(s.coverage * 100)}% of every-15-minutes)${s.mostJammed ? ` · TomTom reported jams most often on ${esc(s.mostJammed.section)} (${s.mostJammed.reports}×)` : ''} ${link(s)}</p>
 </div>`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OMR corridor report · week ${esc(week.key)}</title></head>
+  const cityBlock = city
+    ? `<h2 style="font-size:17px;margin:28px 0 6px">Chennai incidents</h2>
+<p style="margin:0 0 8px;color:#333">This week: ${city.counts.map((c) => `${c.n} ${esc(c.category)}`).join(', ') || 'none recorded'}.${city.accidents ? ` <b>${city.accidents} accident report${city.accidents > 1 ? 's' : ''}.</b>` : ''}${city.flooding ? ` ${city.flooding} flooding report${city.flooding > 1 ? 's' : ''}.` : ''}</p>
+${city.hotspots.length ? `<p style="margin:0 0 6px;color:#333">Trouble spots, last 30 days (where accidents, breakdowns, flooding and major jams keep being reported):</p>
+<table style="border-collapse:collapse;width:100%;font-size:13px" cellpadding="0" cellspacing="0"><tr><th style="${th};text-align:left">Place</th><th style="${th}">Reports</th><th style="${th}">Days</th><th style="${th};text-align:left">What</th><th style="${th}">Map</th></tr>
+${city.hotspots.map((h) => `<tr><td style="${td};text-align:left;white-space:normal">${esc(h.place || 'unnamed road')}</td><td style="${td}">${h.reports}</td><td style="${td}">${h.days}</td><td style="${td};text-align:left">${Object.entries(h.kinds).map(([k, n]) => `${n} ${esc(k)}`).join(', ')}</td><td style="${td}"><a href="https://www.google.com/maps?q=${h.lat},${h.lon}" style="color:#1a5fb4">open</a></td></tr>`).join('')}</table>` : `<p style="margin:0;color:#777;font-size:13px">No trouble spots yet; they appear as incident reports accumulate${city.since ? ` (recording since ${esc(city.since.slice(0, 10))})` : ''}.</p>`}`
+    : '';
+  const roads = [...new Set(summaries.map((s) => s.corridor.road))];
+  const roadName = { omr: 'OMR (Rajiv Gandhi Salai)', 'anna-salai': 'Anna Salai (Mount Road)', gst: 'GST Road', ecr: 'ECR (East Coast Road)' };
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Chennai roads · week ${esc(week.key)}</title></head>
 <body style="margin:0;padding:20px;background:#fff;color:#111;font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
-<div style="max-width:720px;margin:0 auto">
-<h1 style="font-size:20px;margin:0 0 2px">Corridor report · week ${esc(week.key)}</h1>
-<p style="margin:0 0 20px;color:#777">${esc(week.label)} (Monday to Sunday, IST) · generated ${esc(generatedAt.toISOString().slice(0, 16).replace('T', ' '))} UTC</p>
-${summaries.map(section).join('')}
-<p style="color:#777;font-size:12px;margin-top:24px">Speed ratio is live speed ÷ free-flow speed averaged over the corridor's sample points; 100% is an empty road. Travel time is corridor length ÷ mean sampled speed. Baseline is every reading recorded before this week at the same time of day. Change is in percentage points. Traffic flow data © TomTom. A comparison tool, not an official travel-time measurement.</p>
+<div style="max-width:760px;margin:0 auto">
+<h1 style="font-size:20px;margin:0 0 2px">Chennai roads · week ${esc(week.key)}</h1>
+<p style="margin:0 0 18px;color:#777">${esc(week.label)} (Monday to Sunday, IST) · generated ${esc(generatedAt.toISOString().slice(0, 16).replace('T', ' '))} UTC${baseUrl ? ` · <a href="${esc(baseUrl)}/" style="color:#1a5fb4">live page</a>` : ''}</p>
+${roads.map((r) => `<h2 style="font-size:17px;margin:22px 0 8px">${esc(roadName[r] || r || 'Roads')}</h2>${summaries.filter((s) => s.corridor.road === r).map(section).join('')}`).join('')}
+${cityBlock}
+${notes.length ? `<h2 style="font-size:17px;margin:28px 0 6px">Notes</h2><ul style="padding-left:18px;color:#333">${notes.map((n) => `<li>${esc(n.at.slice(0, 10))}: ${esc(n.text)}</li>`).join('')}</ul>` : ''}
+<p style="color:#777;font-size:12px;margin-top:24px">Travel times are TomTom live-traffic routing along each road, sampled every 15 minutes and split at the named junctions. "Empty road" is TomTom's no-traffic time for the same route, which still includes signals. Trouble spots count TomTom incident reports near the same place; they show where trouble recurs, they are not official accident statistics. Traffic data © TomTom.</p>
 </div></body></html>`;
 }
 
 /** Plain-text twin for the email's text part. */
-export function renderWeeklyText({ summaries, week, baseUrl = '' }) {
+export function renderWeeklyText({ summaries, city, week, baseUrl = '' }) {
   return [
-    `Corridor report, week ${week.key} (${week.label}, IST)`,
+    `Chennai roads, week ${week.key} (${week.label}, IST)`,
     '',
-    ...summaries.flatMap((s) => [
-      headline(s),
-      ...s.periods.map((p) => `  ${p.label} ${p.hours}: ${pct(p.speedRatio)} this week vs ${pct(p.baselineRatio)} baseline (${signed(p.changePoints)}), travel ${mins(p.travelTimeS)} vs ${mins(p.baselineTravelTimeS)}`),
-      baseUrl ? `  Live report: ${baseUrl}/corridors/${s.corridor.id}/report?hours=168` : '',
-      '',
-    ]),
-    'Speed ratio = live speed / free-flow speed over the corridor sample points. Traffic flow data (c) TomTom.',
+    ...summaries.flatMap((s) => [headline(s), ...s.tips.map((t) => `  - ${t.text}`), '']),
+    city ? `Incidents this week: ${city.counts.map((c) => `${c.n} ${c.category}`).join(', ') || 'none'}` : '',
+    ...(city?.hotspots || []).slice(0, 5).map((h) => `  Trouble spot: ${h.place || 'unnamed road'} (${h.reports} reports on ${h.days} days) https://www.google.com/maps?q=${h.lat},${h.lon}`),
+    '',
+    baseUrl ? `Live page: ${baseUrl}/` : '',
+    'Traffic data (c) TomTom.',
   ].join('\n');
 }

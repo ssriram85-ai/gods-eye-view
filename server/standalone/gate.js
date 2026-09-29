@@ -159,6 +159,7 @@ label{display:block;font-size:13px;color:#9aa4b2;margin:10px 0 4px}input{width:1
 button{margin-top:16px;width:100%;padding:10px;border:0;border-radius:6px;background:#52d4ff;color:#03202b;font-weight:600;font-size:15px}.err{color:#ff7a8a;margin:10px 0 0}</style></head>
 <body><form method="post" action="${LOGIN_PATH}"><h1>God's Eye View</h1><p>This map is private. Sign in to continue.</p>
 <input type="hidden" name="next" value="${esc(next)}">
+<script>/* keep a shared view's #hash through sign-in; the server never sees it */(function(){var n=document.querySelector('input[name=next]');if(n&&location.hash&&n.value.indexOf('#')<0)n.value+=location.hash;})();</script>
 ${named ? `<label>Name</label><input name="name" autocomplete="username" autocapitalize="none">` : ''}
 <label>Password</label><input type="password" name="password" autocomplete="current-password" autofocus>
 ${error ? `<p class="err">${esc(error)}</p>` : ''}<button>Sign in</button></form></body></html>`;
