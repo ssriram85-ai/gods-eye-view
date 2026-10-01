@@ -7,12 +7,15 @@
  */
 import { SHIFT_MIN_SAVING, CONFIDENCE, VARIES_MIN, SOURCE_LEVELS } from './insights.mjs';
 import { agreementText, describeHours, formalReadiness, FORMAL } from './crosscheck.mjs';
+import { groundTruthText, PASS_KM, ON_ROAD_KM, MIN_ON_ROAD_SHARE } from './drives.mjs';
 
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const pct = (x) => (x == null ? '—' : `${Math.round(x * 100)}%`);
 const VARIES_LABEL = { observed: 'Varies day to day (live)', partly: 'Partly live', modelled: "Mostly TomTom's pattern", unknown: 'Not yet known' };
 
-export function renderMethodology({ roads, incidentCounts = [], incidentsSince = null, rainSince = null, retentionDays = 0, exportPublic = false, notes = [], crosscheck = null, generatedAt = new Date() }) {
+export function renderMethodology({ roads, incidentCounts = [], incidentsSince = null, rainSince = null, retentionDays = 0, exportPublic = false, notes = [], crosscheck = null, groundTruth = [], generatedAt = new Date() }) {
+  const truth = new Map(groundTruth.map((g) => [g.corridor_id, g]));
+  const totalDrives = groundTruth.reduce((a, g) => a + g.drives, 0);
   const agree = new Map((crosscheck?.rows || []).map((r) => [r.corridor_id, r]));
   const google = Boolean(crosscheck?.configured);
   const hoursText = crosscheck?.hours ? describeHours(crosscheck.hours) : '03:00 and every hour from 06:00 to 23:00';
@@ -40,6 +43,7 @@ dl{display:grid;grid-template-columns:max-content 1fr;gap:6px 14px}dt{font-weigh
 <ul>
 <li><b>The record</b> is TomTom's live-traffic drive along each road, every 15 minutes, split at named junctions.</li>
 <li><b>The check</b> is ${google ? `Google's live-traffic drive for the same road at the same moment, ${esc(hoursText)} (IST). ${totalChecks ? `So far TomTom's time has been within 10% of Google's in ${pct(totalWithin10 / totalChecks)} of ${totalChecks} checks, and within 20% in ${pct(totalWithin20 / totalChecks)}.` : 'Checks have just started.'}` : 'being connected; until it is, every figure rests on TomTom alone.'}</li>
+<li><b>The ground truth</b> is timed drives with a phone's GPS, compared with what TomTom and Google predicted at departure: ${totalDrives ? `${totalDrives} valid drive${totalDrives === 1 ? '' : 's'} so far` : 'none recorded yet'}.</li>
 <li><b>Fit for a formal submission</b> today: ${ready} of ${roads.length} road directions, by the rule further down. The rest are labelled early or provisional wherever they appear.</li>
 <li><b>Not covered:</b> accident statistics. No source here records accidents in Chennai; that needs official records.</li>
 </ul></div>
@@ -49,6 +53,7 @@ dl{display:grid;grid-template-columns:max-content 1fr;gap:6px 14px}dt{font-weigh
 <tr><th>Source</th><th>Used for</th><th>How often</th><th>What is kept</th></tr>
 <tr><td><b>TomTom</b> Routing API, live traffic</td><td>The record: minutes per stretch, TomTom's typical minutes for the moment, its no-traffic minutes, and where its route sees jams</td><td>Every 15 minutes, every road and direction</td><td>Every reading${retentionDays > 0 ? ` (raw for ${retentionDays} days, then daily summaries)` : ''}</td></tr>
 <tr><td><b>Google</b> Routes API, live traffic</td><td>An independent check of the record</td><td>${google ? esc(hoursText) : 'not yet connected'}</td><td>Only the outcome of each comparison; Google's own times are not stored (its terms do not allow it)</td></tr>
+<tr><td><b>Timed drives</b> (our own)</td><td>Ground truth: real drive times along each road, stretch by stretch</td><td>Whenever a drive is logged</td><td>The drive's times and the comparison; the GPS track is kept privately and never published</td></tr>
 <tr><td><b>TomTom</b> Traffic Incidents</td><td>Jams, closures, roadworks and any reported accidents or flooding across Chennai</td><td>Every 15 minutes</td><td>Each incident once, with first and last sighting</td></tr>
 <tr><td><b>Open-Meteo</b> weather model</td><td>Hourly rainfall at one point per road</td><td>Hourly</td><td>Every hour${rainSince ? `, since ${esc(rainSince.slice(0, 10))}` : ''}</td></tr>
 <tr><td><b>Tamil Nadu government</b> holiday list</td><td>Marking holidays on charts and reports</td><td>Set once a year</td><td>As notes</td></tr>
@@ -68,6 +73,10 @@ ${google ? `<p>${esc(hoursText.charAt(0).toUpperCase() + hoursText.slice(1))} (I
 <li><b>Stretches:</b> how many of the stretches between junctions agree within 20%.</li>
 </ul>
 <p>Google Maps Platform's terms allow storing only map coordinates, for up to 30 days, so Google's travel times are discarded straight after the comparison; only the outcomes above are kept. Published travel times are always TomTom's. The check runs about 4,700 times a month, inside Google's free allowance, and stops for the month at ${esc(String(crosscheck?.cap ?? 4800))}.</p>` : '<p>A second traffic source (Google Routes) is being connected. Until it is, every travel time on this site rests on TomTom alone.</p>'}
+
+<h2>Ground truth: timed drives</h2>
+<p>A driver opens the logger on a phone, picks the road and direction, and starts at the first junction. At that moment the service asks TomTom and Google how long the drive should take. The phone records GPS every few seconds with the screen kept on. Afterwards the service finds when the drive passed each junction (the closest approach within ${PASS_KM * 1000} m, in order) and compares the real times with the predictions. A drive counts only if it passed every junction and stayed within ${ON_ROAD_KM * 1000} m of the road for at least ${Math.round(MIN_ON_ROAD_SHARE * 100)}% of the way; others are kept but left out. Google's prediction is held in memory until the drive ends and only the agreement band is kept.</p>
+<div class="wrap"><table><tr><th>Road</th><th>Timed drives</th></tr>${roads.map((r) => `<tr><td>${esc(r.corridor.name)}</td><td>${esc(groundTruthText(truth.get(r.corridor.id)))}</td></tr>`).join('')}</table></div>
 
 <h2>How far each road can be trusted today</h2>
 <div class="wrap"><table><tr><th>Road</th><th>Recorded</th><th>Day to day</th><th>Agreement with Google, last 30 days</th><th>Status</th><th>Formal use</th></tr>
@@ -95,7 +104,7 @@ ${roads.map((r) => {
 
 <h2>Known limits</h2>
 <ul>
-<li><b>Two sources are not ground truth.</b> TomTom and Google both estimate traffic from phones and vehicles; where both have little live data, both lean on history, and agreement then shows consistency rather than accuracy. Timed drives on the ground are planned and not yet in place.</li>
+<li><b>Two sources are not ground truth.</b> TomTom and Google both estimate traffic from phones and vehicles; where both have little live data, both lean on history, and agreement then shows consistency rather than accuracy. Timed drives are the check on both; until there are many of them on every road, they show direction, not a measured error rate.</li>
 <li><b>Google is a check, not a record.</b> Its terms do not allow its times to be stored, so every published travel time is TomTom's; Google contributes only agreement figures.</li>
 <li><b>Some roads are mostly pattern.</b> Where the day-to-day test shows little variation, changes from one day to the next are not well observed. Those roads are labelled in the table above.</li>
 <li><b>Different routes are left out.</b> Where Google prefers another way through the junctions (one-way streets, flyovers), the check is counted as "route differs" and not compared.</li>
@@ -117,7 +126,7 @@ ${notes.length ? `<h2>Events and changes on record</h2><div class="wrap"><table>
 <ul>
 <li><b>24–29 September 2026:</b> TomTom point speeds. On OMR those points shared a few long road segments, which hid local jams, so the method was retired.</li>
 <li><b>29 September 2026, 11:30 IST:</b> section travel times on OMR, Anna Salai, GST Road and ECR, both directions. All findings rest on these.</li>
-<li><b>1 October 2026:</b> findings rebuilt around rush shapes, ranges and the night-time drive; rainfall and holidays added; the Google check started (waypoints pinned to the direction of travel from its second hour). The same evening the congestion test changed from "each source against its own no-traffic time" to "both against the road's night-time drive"; checks under the first rule are left out of the congestion figure.</li>
+<li><b>1 October 2026:</b> findings rebuilt around rush shapes, ranges and the night-time drive; rainfall and holidays added; the Google check started (waypoints pinned to the direction of travel from its second hour). The same evening the congestion test changed from "each source against its own no-traffic time" to "both against the road's night-time drive"; checks under the first rule are left out of the congestion figure. The timed-drive logger (ground truth) was added the same day.</li>
 </ul>
 </main></body></html>`;
 }

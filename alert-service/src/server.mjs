@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual, randomBytes } from 'node:crypto';
 import { createService } from './service.mjs';
 import { createCorridorStore, profile, compareProfiles } from './corridor.mjs';
 import { corridorDefinitions, resolveSections, sampleSections, createTravelStore } from './travel.mjs';
@@ -11,6 +11,8 @@ import { fetchRain, createWeatherStore, RAIN_POINTS } from './weather.mjs';
 import { createRollupStore, daysToRoll, rollupCsv } from './rollup.mjs';
 import { renderMethodology } from './methodology.mjs';
 import { googleDrive, compareDrives, createCrossCheckStore, parseHours, istHour, istMonth, formalReadiness } from './crosscheck.mjs';
+import { createDriveStore, analyzeDrive, cleanTrack, errorOf } from './drives.mjs';
+import { renderDriveApp } from './driveapp.mjs';
 import { renderReport } from './report.mjs';
 import { renderSummary } from './summary.mjs';
 import { createGeocoder } from './geocode.mjs';
@@ -84,6 +86,21 @@ const weeklyStore = createStore(join(DATA_DIR, 'weekly'));
 const weather = createWeatherStore(corridors.db);
 const rollups = createRollupStore(corridors.db);
 const crosschecks = createCrossCheckStore(corridors.db);
+const drives = createDriveStore(corridors.db);
+/** Google's prediction for a drive in progress: held in memory only, discarded at the finish (its terms forbid storing it). */
+const pendingGoogle = new Map();
+const DRIVE_KEYS = [GEV_GATE_PASSWORD, ADMIN_TOKEN].filter(Boolean);
+const driveFailures = new Map();
+function driveKeyOk(req) {
+  const given = Buffer.from(String(req.headers['x-drive-key'] || ''));
+  return DRIVE_KEYS.some((k) => { const want = Buffer.from(k); return want.length === given.length && timingSafeEqual(want, given); });
+}
+function driveThrottled(req) {
+  const ip = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket?.remoteAddress || '?';
+  const recent = (driveFailures.get(ip) || []).filter((t) => Date.now() - t < 15 * 60_000);
+  driveFailures.set(ip, recent);
+  return { ip, blocked: recent.length >= 10, fail: () => driveFailures.set(ip, [...recent, Date.now()]) };
+}
 const status = { corridors: null, incidents: null, rain: null, rollup: null, crosscheck: null };
 
 /** Context on the OMR record, added once. */
@@ -435,11 +452,11 @@ const html = (res, body, cache = 'no-store') => {
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': cache });
   res.end(body);
 };
-async function readJson(req) {
+async function readJson(req, limit = 64 * 1024) {
   let body = '';
   for await (const chunk of req) {
     body += chunk;
-    if (body.length > 64 * 1024) throw new Error('body too large');
+    if (body.length > limit) throw new Error('body too large');
   }
   return body ? JSON.parse(body) : {};
 }
@@ -447,7 +464,7 @@ async function readJson(req) {
 // open (they are meant to be shared and cost no quota); everything that
 // registers, deletes, samples, polls or sends needs the token.
 // /mail/check and /weekly/send are admin-only (not in PUBLIC_READ).
-const PUBLIC_READ = /^\/(|summary|methodology|health|incidents|weekly(\/\d{4}-W\d{2}(\.json)?)?|corridors(\/[a-z0-9-]+(\/(report|latest|series|compare|travel|tips))?)?)$/;
+const PUBLIC_READ = /^\/(|summary|methodology|drive|drives|health|incidents|weekly(\/\d{4}-W\d{2}(\.json)?)?|corridors(\/[a-z0-9-]+(\/(report|latest|series|compare|travel|tips))?)?)$/;
 const authorized = (req) =>
   !ADMIN_TOKEN ||
   req.headers.authorization === `Bearer ${ADMIN_TOKEN}` ||
@@ -458,6 +475,70 @@ const server = createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && url.pathname === '/health')
       return json(res, 200, { ...service.health(), corridors: { every_minutes: CORRIDOR_MINUTES, count: sectionedCorridors().length, last: status.corridors }, incidents: { every_minutes: INCIDENT_MINUTES, last: status.incidents }, rain: status.rain, rollup: status.rollup, crosscheck: { configured: Boolean(GOOGLE_ROUTES_KEY), hours: [...GOOGLE_CHECK_HOURS].join(','), cap: GOOGLE_MONTHLY_CAP, last: status.crosscheck }, retentionDays: RAW_RETENTION_DAYS, mail: mailHealth() });
+    // ---- timed drives (their own key: the map password) ----
+    if (req.method === 'GET' && url.pathname === '/drive') return html(res, renderDriveApp(), 'no-store');
+    if (req.method === 'GET' && url.pathname === '/drives') {
+      const list = drives.list(50).map(({ note, ...d }) => d);
+      return json(res, 200, { summary: drives.summary(), drives: list });
+    }
+    if (url.pathname === '/drives/check' || url.pathname === '/drives/start' || /^\/drives\/[a-z0-9]+\/(finish|track)$/.test(url.pathname)) {
+      if (!DRIVE_KEYS.length) return json(res, 403, { error: 'drive logging is not configured on this server' });
+      const gate = driveThrottled(req);
+      if (gate.blocked) return json(res, 429, { error: 'too many attempts; try again in fifteen minutes' });
+      if (!driveKeyOk(req)) return gate.fail(), json(res, 401, { error: 'wrong password' });
+      if (req.method === 'GET' && url.pathname === '/drives/check') return json(res, 200, { ok: true });
+      if (req.method === 'POST' && url.pathname === '/drives/start') {
+        const body = await readJson(req);
+        const c = corridors.getCorridor(String(body.corridorId || ''));
+        if (!isSectioned(c)) return json(res, 400, { error: 'unknown road' });
+        const id = randomBytes(8).toString('hex');
+        const startedAt = new Date().toISOString();
+        let tomtom = null;
+        try {
+          const s = await sampleSections(c, { key: TOMTOM_KEY });
+          tomtom = { ts: s.ts, predS: s.rows.reduce((a, r) => a + (r.travelS || 0), 0), typicalS: s.rows.reduce((a, r) => a + (r.historicS || 0), 0), legs: s.rows.map((r) => r.travelS) };
+        } catch (error) {
+          console.error('[drive] TomTom prediction failed:', error.message);
+        }
+        if (GOOGLE_ROUTES_KEY && crosschecks.callsInMonth(istMonth()) < GOOGLE_MONTHLY_CAP) {
+          try {
+            const g = await googleDrive(c, { key: GOOGLE_ROUTES_KEY });
+            pendingGoogle.set(id, { seconds: g.seconds, at: Date.now() });
+            crosschecks.record(c.id, startedAt, null, { outcome: 'drive' }); // counts towards the monthly cap; holds no Google data
+          } catch (error) {
+            console.error('[drive] Google prediction failed:', error.message);
+          }
+        }
+        for (const [k, v] of pendingGoogle) if (Date.now() - v.at > 6 * 3_600_000) pendingGoogle.delete(k);
+        drives.start({ id, corridorId: c.id, startedAt, tomtom });
+        console.log(`[drive] started ${id} on ${c.id}`);
+        return json(res, 200, { id, prediction: tomtom && { tomtomMinutes: tomtom.predS / 60, typicalMinutes: tomtom.typicalS / 60 } });
+      }
+      const dm = url.pathname.match(/^\/drives\/([a-z0-9]+)\/(finish|track)$/);
+      const d = drives.get(dm[1]);
+      if (!d) return json(res, 404, { error: 'drive not found' });
+      if (req.method === 'GET' && dm[2] === 'track') return json(res, 200, { id: d.id, corridor: d.corridor_id, note: d.note, track: d.track ? JSON.parse(d.track) : [] });
+      if (req.method === 'POST' && dm[2] === 'finish') {
+        if (d.status !== 'started') return json(res, 409, { error: `drive already ${d.status}` });
+        const body = await readJson(req, 3 * 1024 * 1024);
+        const c = corridors.getCorridor(d.corridor_id);
+        if (body.cancelled) {
+          pendingGoogle.delete(d.id);
+          drives.finish(d.id, { cancelled: true });
+          return json(res, 200, { cancelled: true });
+        }
+        const track = cleanTrack(body.track);
+        const analysis = analyzeDrive({ corridor: c, track });
+        const g = pendingGoogle.get(d.id);
+        pendingGoogle.delete(d.id);
+        const googleBand = g && analysis.valid ? errorOf(g.seconds, analysis.actualS)?.band ?? null : null;
+        const saved = drives.finish(d.id, { analysis, track, note: body.note, googleBand });
+        const { track: _t, note: _n, ...publicDrive } = saved;
+        console.log(`[drive] ${d.id} ${saved.status}${analysis.valid ? ` · ${Math.round(analysis.actualS / 60)} min vs TomTom ${Math.round((d.tomtom_pred_s || 0) / 60)}` : ` · ${analysis.problems.join('; ')}`}`);
+        return json(res, 200, { drive: publicDrive, analysis, sections: c.definition.sections, predictionLegs: d.tomtom_pred_legs ? JSON.parse(d.tomtom_pred_legs) : [] });
+      }
+      return json(res, 405, { error: 'method not allowed' });
+    }
     if (!authorized(req)) return json(res, 401, { error: 'unauthorized' });
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/summary')) return html(res, summaryHtml(), 'public, max-age=60');
     if (req.method === 'GET' && url.pathname === '/incidents') {
@@ -504,6 +585,7 @@ const server = createServer(async (req, res) => {
         retentionDays: RAW_RETENTION_DAYS,
         exportPublic: EXPORT_PUBLIC,
         crosscheck: { configured: Boolean(GOOGLE_ROUTES_KEY), hours: GOOGLE_CHECK_HOURS, cap: GOOGLE_MONTHLY_CAP, rows: crosschecks.summary(new Date(Date.now() - 30 * DAY).toISOString()) },
+        groundTruth: drives.summary(),
         notes: corridors.db.prepare('SELECT * FROM notes ORDER BY at').all().filter((n, i, all) => all.findIndex((x) => x.text === n.text) === i),
       }), 'public, max-age=300');
     }
