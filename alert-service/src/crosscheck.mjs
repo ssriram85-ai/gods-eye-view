@@ -21,7 +21,23 @@ const secs = (d) => {
   const m = /^(\d+(?:\.\d+)?)s$/.exec(String(d || ''));
   return m ? Number(m[1]) : null;
 };
-const latLng = (p) => ({ location: { latLng: { latitude: Number(p.lat), longitude: Number(p.lon) } } });
+/** Compass bearing from a to b, degrees 0–359. */
+export function bearing(a, b) {
+  const r = Math.PI / 180;
+  const y = Math.sin((b.lon - a.lon) * r) * Math.cos(b.lat * r);
+  const x = Math.cos(a.lat * r) * Math.sin(b.lat * r) - Math.sin(a.lat * r) * Math.cos(b.lat * r) * Math.cos((b.lon - a.lon) * r);
+  return Math.round(((Math.atan2(y, x) / r) % 360 + 360) % 360);
+}
+/**
+ * A waypoint pinned to the direction of travel, so Google snaps it to the
+ * same carriageway TomTom used (the waypoints sit on that carriageway).
+ */
+const waypoint = (pts, i) => {
+  const p = pts[i];
+  const from = pts[Math.max(0, i - 1)], to = pts[Math.min(pts.length - 1, i + 1)];
+  const heading = i === 0 ? bearing(p, to) : i === pts.length - 1 ? bearing(from, p) : bearing(from, to);
+  return { location: { latLng: { latitude: Number(p.lat), longitude: Number(p.lon) }, heading }, sideOfRoad: true };
+};
 
 /** Parse "3,6-23" into a set of IST hours. */
 export function parseHours(spec = '3,6-23') {
@@ -42,9 +58,9 @@ export async function googleDrive(corridor, { key, fetchImpl = fetch, timeoutMs 
   if (!key) throw new Error('GOOGLE_ROUTES_API_KEY is not set');
   const pts = corridor.points;
   const body = {
-    origin: latLng(pts[0]),
-    destination: latLng(pts[pts.length - 1]),
-    intermediates: pts.slice(1, -1).map(latLng),
+    origin: waypoint(pts, 0),
+    destination: waypoint(pts, pts.length - 1),
+    intermediates: pts.slice(1, -1).map((_, k) => waypoint(pts, k + 1)),
     travelMode: 'DRIVE',
     routingPreference: 'TRAFFIC_AWARE',
     computeAlternativeRoutes: false,
@@ -89,7 +105,8 @@ export function compareDrives(google, tomtom, lengthKm) {
   const t = rows.reduce((a, r) => a + (r.travel_s || 0), 0);
   const tFree = rows.reduce((a, r) => a + (r.no_traffic_s || 0), 0);
   if (!google?.seconds || !t) return { outcome: 'no-data' };
-  if (google.meters && lengthKm && Math.abs(google.meters / 1000 - lengthKm) / lengthKm > 0.1) return { outcome: 'route-differs' };
+  if (google.meters && lengthKm && Math.abs(google.meters / 1000 - lengthKm) / lengthKm > 0.1)
+    return { outcome: 'route-differs', note: google.meters / 1000 > lengthKm ? 'longer' : 'shorter' };
   const diff = (t - google.seconds) / google.seconds;
   const outcome = Math.abs(diff) <= 0.1 ? 'within10' : Math.abs(diff) <= 0.2 ? 'within20' : diff > 0 ? 'tomtom-higher' : 'tomtom-lower';
   const gCongested = google.staticSeconds ? google.seconds / google.staticSeconds >= 1.2 : null;

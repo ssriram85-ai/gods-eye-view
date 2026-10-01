@@ -213,7 +213,7 @@ async function crossCheckIfDue({ force = false } = {}) {
       const g = await googleDrive(c, { key: GOOGLE_ROUTES_KEY });
       const r = compareDrives(g, tomtom, c.lengthKm);
       crosschecks.record(c.id, ts, tomtom.ts, r);
-      outcomes.push(`${c.id}:${r.outcome}`);
+      outcomes.push(`${c.id}:${r.outcome}${r.note ? `(${r.note})` : ''}`);
     } catch (error) {
       crosschecks.record(c.id, ts, tomtom.ts, { outcome: 'error', error: error.message.slice(0, 200) });
       outcomes.push(`${c.id}:error`);

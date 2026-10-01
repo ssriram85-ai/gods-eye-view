@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { googleDrive, compareDrives, createCrossCheckStore, parseHours, istHour, istMonth, agreementText } from '../src/crosscheck.mjs';
+import { googleDrive, compareDrives, createCrossCheckStore, parseHours, istHour, istMonth, agreementText, bearing } from '../src/crosscheck.mjs';
 
 const corridor = { id: 'omr-south', lengthKm: 22.6, points: [{ lat: 13.0, lon: 80.25 }, { lat: 12.95, lon: 80.24 }, { lat: 12.82, lon: 80.22 }] };
 const tomtom = (legMin, freeMin) => ({ ts: '2026-10-01T12:30:00.000Z', rows: legMin.map((m, i) => ({ leg: i, travel_s: m * 60, no_traffic_s: freeMin[i] * 60 })) });
@@ -19,7 +19,11 @@ test('the request asks for live traffic through every waypoint with a narrow fie
   const body = JSON.parse(req.init.body);
   assert.equal(body.routingPreference, 'TRAFFIC_AWARE');
   assert.equal(body.travelMode, 'DRIVE');
-  assert.deepEqual(body.intermediates, [{ location: { latLng: { latitude: 12.95, longitude: 80.24 } } }]);
+  assert.deepEqual(body.intermediates, [{ location: { latLng: { latitude: 12.95, longitude: 80.24 }, heading: bearing(corridor.points[0], corridor.points[2]) }, sideOfRoad: true }]);
+  assert.equal(body.origin.location.heading, bearing(corridor.points[0], corridor.points[1]));
+  assert.equal(body.destination.location.heading, bearing(corridor.points[1], corridor.points[2]));
+  assert.equal(bearing({ lat: 13, lon: 80 }, { lat: 12, lon: 80 }), 180, 'due south');
+  assert.equal(bearing({ lat: 13, lon: 80 }, { lat: 13, lon: 81 }), 90, 'due east');
   assert.deepEqual(g, { seconds: 3720, staticSeconds: 2700, meters: 22580, legs: [{ seconds: 1500, meters: 9000 }, { seconds: 2220, meters: 13580 }] });
 });
 
@@ -39,7 +43,7 @@ test('comparison keeps only outcomes, never Google\'s numbers', () => {
   assert.equal(compareDrives(g, tomtom([30, 40], [18, 20]), 22.6).outcome, 'within20'); // 70 vs 60 min = +16.7%
   assert.equal(compareDrives(g, tomtom([40, 40], [18, 20]), 22.6).outcome, 'tomtom-higher');
   assert.equal(compareDrives(g, tomtom([20, 20], [18, 20]), 22.6).outcome, 'tomtom-lower');
-  assert.equal(compareDrives({ ...g, meters: 27000 }, tomtom([26, 37], [18, 20]), 22.6).outcome, 'route-differs');
+  assert.deepEqual(compareDrives({ ...g, meters: 27000 }, tomtom([26, 37], [18, 20]), 22.6), { outcome: 'route-differs', note: 'longer' });
   assert.equal(compareDrives(g, tomtom([26, 37], [26, 37]), 22.6).congestionAgree, 0, 'Google congested (+33%), TomTom not');
   assert.equal(compareDrives(null, tomtom([1], [1]), 1).outcome, 'no-data');
 });
