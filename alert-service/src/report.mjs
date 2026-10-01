@@ -1,4 +1,8 @@
 import { agreementText } from './crosscheck.mjs';
+import { skillText } from './forecast.mjs';
+import { rainText } from './raineffect.mjs';
+import { impactText } from './impact.mjs';
+import { groundTruthText } from './drives.mjs';
 /** Self-contained HTML report for one corridor: no external assets. */
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const pct = (v) => (v == null ? '—' : `${Math.round(v * 100)}%`);
@@ -91,6 +95,15 @@ ${t.tips?.length ? ['morning', 'evening'].map((p) => byPeriod(p).length ? `<h2>$
 <table><thead><tr><th>Stretch</th><th>Length</th><th>Now</th><th>Night-time</th><th>Extra</th></tr></thead><tbody>
 ${sections.map((s, i) => { const r = rows.find((x) => x.leg === i); const base = night?.sectionMinutes?.[i] ?? (r ? r.no_traffic_s / 60 : null); const extra = r && base != null ? r.travel_s / 60 - base : null; return `<tr class="${extra != null && extra >= 5 ? 'bad' : ''}"><td>${esc(s.from)} → ${esc(s.to)}</td><td>${s.lengthKm} km</td><td>${r ? mins(r.travel_s) : '—'}</td><td>${base != null ? `${base.toFixed(1)} min` : '—'}</td><td>${extra == null ? '—' : `${extra >= 0 ? '+' : ''}${extra.toFixed(1)} min`}</td></tr>`; }).join('')}
 </tbody></table>
+<h2>Next two hours</h2>
+${t.forecast?.list?.length ? `<table><thead><tr><th>Leaving at (IST)</th><th>Expected</th><th>Range</th><th>Typical for that time</th></tr></thead><tbody>${t.forecast.list.map((f) => `<tr><td>${ist(f.target_ts).slice(6)}</td><td>${mins(f.minutes * 60)}</td><td>${Math.round(f.low)}–${Math.round(f.high)} min</td><td>${mins(f.typical * 60)}</td></tr>`).join('')}</tbody></table><p class="muted">Track record: ${esc(skillText(t.skill, 60))}.</p>` : '<p class="muted">Forecasts start once each half-hour has been recorded at least once.</p>'}
+<h2>Other evidence</h2>
+<ul>
+<li><b>Ground truth:</b> ${esc(groundTruthText(t.truth))}. <a href="/drive">Log a drive</a></li>
+<li><b>Rain:</b> ${esc(rainText(t.rain))}.</li>
+${(t.impacts || []).length ? t.impacts.map((i) => `<li><b>${esc(i.title)}:</b> ${esc(impactText(i.result))}</li>`).join('') : '<li><b>Changes evaluated:</b> none on this road yet. <a href="/impact">Evaluate a change</a></li>'}
+</ul>
+<p><a href="/brief/${esc(corridor.id)}">One-page brief for this road</a> (printable)</p>
 <h2>Whole road, last ${hours} hours</h2>
 ${minutesChart(t.totals, { notes, baseline: night?.minutes ?? null, rain: t.rain })}
 ${wk.length ? `<h2>Typical weekday, by departure time</h2>${profileBars(wk, night?.minutes)}` : ''}`;

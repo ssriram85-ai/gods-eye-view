@@ -8,6 +8,9 @@
 import { SHIFT_MIN_SAVING, CONFIDENCE, VARIES_MIN, SOURCE_LEVELS } from './insights.mjs';
 import { agreementText, describeHours, formalReadiness, FORMAL } from './crosscheck.mjs';
 import { groundTruthText, PASS_KM, ON_ROAD_KM, MIN_ON_ROAD_SHARE } from './drives.mjs';
+import { skillText, HORIZONS, TAU_MIN } from './forecast.mjs';
+import { rainText, MIN as RAIN_MIN } from './raineffect.mjs';
+import { impactText, MIN as IMPACT_MIN } from './impact.mjs';
 
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const pct = (x) => (x == null ? '—' : `${Math.round(x * 100)}%`);
@@ -78,6 +81,18 @@ ${google ? `<p>${esc(hoursText.charAt(0).toUpperCase() + hoursText.slice(1))} (I
 <p>A driver opens the logger on a phone, picks the road and direction, and starts at the first junction. At that moment the service asks TomTom and Google how long the drive should take. The phone records GPS every few seconds with the screen kept on. Afterwards the service finds when the drive passed each junction (the closest approach within ${PASS_KM * 1000} m, in order) and compares the real times with the predictions. A drive counts only if it passed every junction and stayed within ${ON_ROAD_KM * 1000} m of the road for at least ${Math.round(MIN_ON_ROAD_SHARE * 100)}% of the way; others are kept but left out. Google's prediction is held in memory until the drive ends and only the agreement band is kept.</p>
 <div class="wrap"><table><tr><th>Road</th><th>Timed drives</th></tr>${roads.map((r) => `<tr><td>${esc(r.corridor.name)}</td><td>${esc(groundTruthText(truth.get(r.corridor.id)))}</td></tr>`).join('')}</table></div>
 
+<h2>Measuring the effect of a change</h2>
+<p>When a road changes (a closed U-turn, a new signal plan, a diversion), the service compares that road with the untouched monitored roads, before and after, at the same times of day (difference-in-differences on log travel time). Citywide effects such as rain, holidays and school traffic move every road and cancel out. Both directions of the changed road count as changed; the other roads are the comparison. The 95% range comes from resampling whole days; a placebo check runs the same test on each untouched road, and a result is not counted if untouched roads moved as much. At least ${IMPACT_MIN.preDays} recorded days before the change are needed. Results and a form to test any date: <a href="/impact">measuring changes</a>.</p>
+${roads.some((r) => (r.impacts || []).length) ? `<ul>${roads.flatMap((r) => (r.impacts || []).map((i) => `<li><b>${esc(i.title)}</b>: ${esc(impactText(i.result, { [r.corridor.id]: r.corridor.name }))}</li>`)).join('')}</ul>` : ''}
+
+<h2>Forecasts and their track record</h2>
+<p>Every 15 minutes each road gets a forecast for leaving in ${HORIZONS.join(', ')} minutes: the typical drive for that half-hour, adjusted by how unusual the road is right now (its last three readings against their own typical), with the adjustment fading over about ${TAU_MIN} minutes. The range is that half-hour's "most days" range, shifted the same way. Every forecast is kept and scored against the real reading at its time, alongside two simple rivals: "nothing changes" (the current drive) and "a normal day" (the typical drive alone). The forecast earns its place only where it beats both.</p>
+<div class="wrap"><table><tr><th>Road</th><th>Track record, 60 minutes ahead (last 30 days)</th></tr>${roads.map((r) => `<tr><td>${esc(r.corridor.name)}</td><td>${esc(skillText(r.skill, 60))}</td></tr>`).join('')}</table></div>
+
+<h2>Rain</h2>
+<p>For every reading with a known rainfall that hour (Open-Meteo, one point per road), each stretch's drive is compared with its typical dry-day drive at the same half-hour. The median extra minutes are reported by rain band (drizzle, light 2.5 mm+, moderate 7.5 mm+, heavy 15 mm+ per hour) once a band rests on at least ${RAIN_MIN.readings} readings across ${RAIN_MIN.days} days.</p>
+<div class="wrap"><table><tr><th>Road</th><th>Rain effect</th></tr>${roads.map((r) => `<tr><td>${esc(r.corridor.name)}</td><td>${esc(rainText(r.rain))}</td></tr>`).join('')}</table></div>
+
 <h2>How far each road can be trusted today</h2>
 <div class="wrap"><table><tr><th>Road</th><th>Recorded</th><th>Day to day</th><th>Agreement with Google, last 30 days</th><th>Status</th><th>Formal use</th></tr>
 ${roads.map((r) => {
@@ -126,7 +141,7 @@ ${notes.length ? `<h2>Events and changes on record</h2><div class="wrap"><table>
 <ul>
 <li><b>24–29 September 2026:</b> TomTom point speeds. On OMR those points shared a few long road segments, which hid local jams, so the method was retired.</li>
 <li><b>29 September 2026, 11:30 IST:</b> section travel times on OMR, Anna Salai, GST Road and ECR, both directions. All findings rest on these.</li>
-<li><b>1 October 2026:</b> findings rebuilt around rush shapes, ranges and the night-time drive; rainfall and holidays added; the Google check started (waypoints pinned to the direction of travel from its second hour). The same evening the congestion test changed from "each source against its own no-traffic time" to "both against the road's night-time drive"; checks under the first rule are left out of the congestion figure. The timed-drive logger (ground truth) was added the same day.</li>
+<li><b>1 October 2026:</b> findings rebuilt around rush shapes, ranges and the night-time drive; rainfall and holidays added; the Google check started (waypoints pinned to the direction of travel from its second hour). The same evening the congestion test changed from "each source against its own no-traffic time" to "both against the road's night-time drive"; checks under the first rule are left out of the congestion figure. The timed-drive logger (ground truth), change evaluation, forecasts with a track record, the rain effect and one-page briefs were added the same day.</li>
 </ul>
 </main></body></html>`;
 }

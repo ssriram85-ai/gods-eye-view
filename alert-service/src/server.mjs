@@ -14,6 +14,11 @@ import { googleDrive, compareDrives, createCrossCheckStore, parseHours, istHour,
 import { createDriveStore, analyzeDrive, cleanTrack, errorOf } from './drives.mjs';
 import { renderDriveApp } from './driveapp.mjs';
 import { buildGeoFeed, buildHistory } from './roadfeed.mjs';
+import { evaluateChange, impactText, createInterventionStore, controlsFor } from './impact.mjs';
+import { renderImpactPage } from './impactpage.mjs';
+import { forecastRoad, createForecastStore } from './forecast.mjs';
+import { rainEffect } from './raineffect.mjs';
+import { briefSection, renderBriefs } from './brief.mjs';
 import { renderReport } from './report.mjs';
 import { renderSummary } from './summary.mjs';
 import { createGeocoder } from './geocode.mjs';
@@ -88,6 +93,10 @@ const weather = createWeatherStore(corridors.db);
 const rollups = createRollupStore(corridors.db);
 const crosschecks = createCrossCheckStore(corridors.db);
 const drives = createDriveStore(corridors.db);
+const interventions = createInterventionStore(corridors.db);
+const forecasts = createForecastStore(corridors.db);
+// The one change on record so far; recording began after it ended, so it cannot be evaluated (the page says so).
+interventions.upsert({ id: 'omr-uturn-trial-2026-09-24', title: 'GCTP trial: U-turns near Geetham, BSR Mall and World Trade Centre closed', corridors: ['omr-south', 'omr-north'], start: '2026-09-24T02:30:00.000Z', end: '2026-09-24T06:30:00.000Z', source: 'https://www.dtnext.in/news/chennai/gctps-diversion-experiment-chokes-rajiv-gandhi-salai-reverses-changes' });
 /** Google's prediction for a drive in progress: held in memory only, discarded at the finish (its terms forbid storing it). */
 const pendingGoogle = new Map();
 const DRIVE_KEYS = [GEV_GATE_PASSWORD, ADMIN_TOKEN].filter(Boolean);
@@ -160,6 +169,11 @@ async function sampleAllCorridors() {
   }
   status.corridors = { at: new Date().toISOString(), ok: results.filter((r) => !r.error).length, failed: results.filter((r) => r.error).map((r) => `${r.id}: ${r.error}`) };
   crossCheckIfDue().catch((e) => console.error('[crosscheck] failed:', e.message));
+  try {
+    forecastRound();
+  } catch (error) {
+    console.error('[forecast] failed:', error.message);
+  }
   console.log(`[corridors] sampled ${results.map((r) => `${r.id}:${r.error ? 'ERR' : 'ok'}`).join(' ')}`);
   return results;
 }
@@ -258,6 +272,21 @@ async function crossCheckIfDue({ force = false } = {}) {
 
 // ---- road insight helpers ----
 const sectionedCorridors = () => corridors.listCorridors().filter(isSectioned);
+/** Issue the next two hours' forecasts for every road, and score the ones whose time has come. */
+function forecastRound() {
+  const now = Date.now();
+  const issuedAt = new Date(now).toISOString();
+  for (const c of sectionedCorridors()) {
+    const n = c.definition.sections.length;
+    const rows = travel.rows(c.id, new Date(now - 28 * DAY).toISOString(), new Date(now + 60_000).toISOString());
+    const prof = travelProfile(rows, { sections: n });
+    const recent = travel.totals(c.id, new Date(now - 4 * 3600_000).toISOString(), new Date(now + 60_000).toISOString()).filter((r) => r.legs === n).map((r) => ({ ts: r.ts, minutes: r.travel_s / 60 }));
+    if (recent.length && now - Date.parse(recent[recent.length - 1].ts) < 20 * 60_000) forecasts.issue(c.id, issuedAt, forecastRoad({ profile: prof, recent, nowMs: now }));
+    forecasts.score(c.id, recent);
+  }
+  if (new Date(now).getUTCHours() === 0 && new Date(now).getUTCMinutes() < 15) forecasts.prune(new Date(now - 60 * DAY).toISOString());
+}
+
 function roadInsight(c) {
   const now = Date.now();
   const sections = c.definition.sections.length;
@@ -266,15 +295,43 @@ function roadInsight(c) {
   const latest = travel.latest(c.id);
   const advice = commuterTips(c, prof);
   const days = daysCovered(rows);
-  return { corridor: c, profile: prof, latest, ...advice, days, confidence: confidenceOf(days.weekdays), source: sourceOf(rows, sections), status: liveStatus(c, latest, prof, advice.baseline), since: corridors.db.prepare('SELECT MIN(ts) AS ts FROM route_samples WHERE corridor_id = ?').get(c.id)?.ts };
+  const road = c.definition?.road;
+  const rain = RAIN_POINTS[road] ? weather.series(road, new Date(now - 28 * DAY).toISOString(), new Date(now + 3600_000).toISOString()) : new Map();
+  return {
+    corridor: c, profile: prof, latest, ...advice, days, confidence: confidenceOf(days.weekdays), source: sourceOf(rows, sections),
+    status: liveStatus(c, latest, prof, advice.baseline), since: corridors.db.prepare('SELECT MIN(ts) AS ts FROM route_samples WHERE corridor_id = ?').get(c.id)?.ts,
+    forecast: forecasts.latest(c.id), skill: forecasts.skill(c.id, new Date(now - 30 * DAY).toISOString()), rain: rainEffect({ corridor: c, rows, rain }),
+  };
 }
+/** Every change on record, evaluated for each road it touched (cached ten minutes: the placebo check is the costly part). */
+let impactCache = { at: 0, list: [] };
+function impactResults() {
+  if (Date.now() - impactCache.at < 10 * 60_000) return impactCache.list;
+  const all = sectionedCorridors();
+  const list = interventions.list().map((i) => ({
+    id: i.id, title: i.title, start: i.start_ts, end: i.end_ts, source: i.source,
+    results: i.corridors.map((id) => all.find((c) => c.id === id)).filter(Boolean).map((c) => ({ corridor: c.id, result: evaluateChange({ travel, treated: c, controls: controlsFor(c, all), start: i.start_ts, end: i.end_ts, hours: i.hours }) })),
+  }));
+  impactCache = { at: Date.now(), list };
+  return list;
+}
+const corridorNames = () => Object.fromEntries(corridors.listCorridors().map((c) => [c.id, c.name]));
+const parseHoursParam = (text) => {
+  const m = /^(\d{1,2}):?(\d{2})?\s*-\s*(\d{1,2}):?(\d{2})?$/.exec(String(text || '').trim());
+  return m ? [Number(m[1]) * 60 + Number(m[2] || 0), Number(m[3]) * 60 + Number(m[4] || 0)] : null;
+};
+
 /** Every sectioned road's insight, in the built-in order, with cross-road notes attached. */
 function allInsights() {
   const order = corridorDefinitions().map((d) => d.id);
   const list = sectionedCorridors().sort((a, b) => (order.indexOf(a.id) + 1 || 99) - (order.indexOf(b.id) + 1 || 99)).map(roadInsight);
   const notes = crossRoadNotes(list);
   const agreement = new Map(crosschecks.summary(new Date(Date.now() - 30 * DAY).toISOString()).map((x) => [x.corridor_id, x]));
+  const truth = new Map(drives.summary().map((x) => [x.corridor_id, x]));
+  const impacts = impactResults();
   for (const r of list) {
+    r.truth = truth.get(r.corridor.id) || null;
+    r.impacts = impacts.flatMap((e) => e.results.filter((x) => x.corridor === r.corridor.id).map((x) => ({ title: e.title, result: x.result })));
     r.notes = notes.get(r.corridor.id) || [];
     r.agreement = agreement.get(r.corridor.id) || null;
     r.formal = formalReadiness(r.confidence, r.agreement);
@@ -311,7 +368,12 @@ function weeklyReport(week) {
   const summaries = addCrossRoadNotes(list.map((corridor) => summarizeWeek({ travel, corridor, week, rain: rainFor(corridor) })));
   const agreement = new Map(crosschecks.summary(week.start).map((r) => [r.corridor_id, r]));
   const agreement30 = new Map(crosschecks.summary(new Date(Date.parse(week.end) - 30 * DAY).toISOString()).map((r) => [r.corridor_id, r]));
+  const insightById = new Map(allInsights().map((r) => [r.corridor.id, r]));
   for (const s of summaries) {
+    const ins = insightById.get(s.corridor.id);
+    s.skill = ins?.skill || null;
+    s.rainEffect = ins?.rain || null;
+    s.impacts = ins?.impacts || [];
     s.agreement = agreement.get(s.corridor.id) || null;
     s.formal = formalReadiness(s.confidence, agreement30.get(s.corridor.id) || null);
   }
@@ -465,7 +527,7 @@ async function readJson(req, limit = 64 * 1024) {
 // open (they are meant to be shared and cost no quota); everything that
 // registers, deletes, samples, polls or sends needs the token.
 // /mail/check and /weekly/send are admin-only (not in PUBLIC_READ).
-const PUBLIC_READ = /^\/(|summary|methodology|drive|drives|roads\/geo|roads\/history|health|incidents|weekly(\/\d{4}-W\d{2}(\.json)?)?|corridors(\/[a-z0-9-]+(\/(report|latest|series|compare|travel|tips))?)?)$/;
+const PUBLIC_READ = /^\/(|summary|methodology|impact|impact\.json|impact\/evaluate|forecast|rain-effect|brief(\/[a-z0-9-]+)?|drive|drives|roads\/geo|roads\/history|health|incidents|weekly(\/\d{4}-W\d{2}(\.json)?)?|corridors(\/[a-z0-9-]+(\/(report|latest|series|compare|travel|tips))?)?)$/;
 const authorized = (req) =>
   !ADMIN_TOKEN ||
   req.headers.authorization === `Bearer ${ADMIN_TOKEN}` ||
@@ -598,6 +660,13 @@ const server = createServer(async (req, res) => {
       return res.end(rollupCsv(rollups.rows(from, to, url.searchParams.get('corridor') || null), byId));
     }
     if (req.method === 'POST' && url.pathname === '/rollup') return json(res, 200, rollUp());
+    if (req.method === 'POST' && url.pathname === '/interventions') {
+      const b = await readJson(req);
+      if (!b?.id || !b.title || !Array.isArray(b.corridors) || !b.start) return json(res, 400, { error: 'id, title, corridors [ids] and start are required' });
+      interventions.upsert({ id: String(b.id).toLowerCase().replace(/[^a-z0-9-]+/g, '-').slice(0, 80), title: b.title, corridors: b.corridors, start: new Date(b.start).toISOString(), end: b.end ? new Date(b.end).toISOString() : null, hours: b.hours ? parseHoursParam(b.hours) : null, source: b.source || null });
+      impactCache.at = 0;
+      return json(res, 200, { interventions: interventions.list() });
+    }
     if (req.method === 'POST' && url.pathname === '/crosscheck') return json(res, 200, (await crossCheckIfDue({ force: true })) || { skipped: 'GOOGLE_ROUTES_API_KEY not set' });
     // ---- mail check: log in to the mail server and stop, no email sent ----
     if (req.method === 'POST' && url.pathname === '/mail/check') {
@@ -622,6 +691,36 @@ const server = createServer(async (req, res) => {
       const { summaries, city, notes } = weeklyReport(week);
       if (wm[2]) return json(res, 200, { week, summaries, city, notes });
       return html(res, renderWeeklyHtml({ summaries, city, notes, week, baseUrl: REPORT_BASE_URL }));
+    }
+
+    // ---- measuring changes, forecasts, rain, briefs (public, recorded data only) ----
+    if (req.method === 'GET' && url.pathname === '/impact') {
+      return html(res, renderImpactPage({ evaluations: impactResults(), corridors: sectionedCorridors(), names: corridorNames() }), 'public, max-age=120');
+    }
+    if (req.method === 'GET' && url.pathname === '/impact.json') return json(res, 200, { evaluations: impactResults() });
+    if (req.method === 'GET' && url.pathname === '/impact/evaluate') {
+      const c = corridors.getCorridor(String(url.searchParams.get('corridor') || ''));
+      const start = url.searchParams.get('start'), end = url.searchParams.get('end') || null;
+      if (!isSectioned(c)) return json(res, 400, { error: 'Choose one of the monitored roads.' });
+      if (!start || Number.isNaN(Date.parse(start)) || (end && Number.isNaN(Date.parse(end)))) return json(res, 400, { error: 'Give the start (and end, if any) as dates.' });
+      const hours = url.searchParams.get('hours') ? parseHoursParam(url.searchParams.get('hours')) : null;
+      if (url.searchParams.get('hours') && !hours) return json(res, 400, { error: 'Hours look like 16:00-21:00.' });
+      const result = evaluateChange({ travel, treated: c, controls: controlsFor(c, sectionedCorridors()), start: new Date(start).toISOString(), end: end && new Date(end).toISOString(), hours });
+      return json(res, 200, { result, text: impactText(result, corridorNames()) });
+    }
+    if (req.method === 'GET' && url.pathname === '/forecast') {
+      return json(res, 200, { roads: allInsights().map((r) => ({ id: r.corridor.id, name: r.corridor.name, forecast: r.forecast, skill: r.skill })) });
+    }
+    if (req.method === 'GET' && url.pathname === '/rain-effect') return json(res, 200, { roads: allInsights().map((r) => r.rain) });
+    const bm = url.pathname.match(/^\/brief(?:\/([a-z0-9-]+))?$/);
+    if (req.method === 'GET' && bm) {
+      const list = allInsights();
+      const generatedAt = new Date().toISOString();
+      const pick = !bm[1] || bm[1] === 'all' ? list : list.filter((r) => r.corridor.id === bm[1]);
+      if (!pick.length) return json(res, 404, { error: 'road not found' });
+      const sections = pick.map((r) => briefSection({ insight: r, totals: travel.totals(r.corridor.id, new Date(Date.now() - 7 * DAY).toISOString(), new Date(Date.now() + 60_000).toISOString()), forecast: r.forecast, skill: r.skill, rain: r.rain, impacts: r.impacts, names: corridorNames(), generatedAt }));
+      const index = !bm[1] ? `<div class="index"><b>Briefs</b>: ${list.map((r) => `<a href="/brief/${r.corridor.id}">${r.corridor.name.split('·')[0].trim()}</a>`).join(' · ')}</div>` : null;
+      return html(res, renderBriefs({ sections, title: pick.length === 1 ? `Brief · ${pick[0].corridor.name}` : 'Chennai roads · briefs', index }), 'no-store');
     }
 
     // ---- map feeds (recorded data only; CORS-open for map clients) ----
@@ -701,7 +800,7 @@ const server = createServer(async (req, res) => {
           notes: corridors.listNotes(corridor.id),
           comparison,
           windows: { hours, a: a?.label, b: b?.label },
-          travel: insight && { totals: travel.totals(corridor.id, from, to), latest: insight.latest, status: insight.status, tips: insight.tips, notes: insight.notes, agreement: insight.agreement, formal: insight.formal, googleConfigured: Boolean(GOOGLE_ROUTES_KEY), profile: insight.profile, baseline: insight.baseline, source: insight.source, confidence: insight.confidence, jams: travel.jams(corridor.id, from, to), rain: RAIN_POINTS[road] ? weather.series(road, from, to) : null },
+          travel: insight && { totals: travel.totals(corridor.id, from, to), latest: insight.latest, status: insight.status, tips: insight.tips, notes: insight.notes, agreement: insight.agreement, formal: insight.formal, googleConfigured: Boolean(GOOGLE_ROUTES_KEY), forecast: insight.forecast, skill: insight.skill, rain: insight.rain, impacts: insight.impacts, truth: insight.truth, profile: insight.profile, baseline: insight.baseline, source: insight.source, confidence: insight.confidence, jams: travel.jams(corridor.id, from, to), rain: RAIN_POINTS[road] ? weather.series(road, from, to) : null },
         }));
       }
     }

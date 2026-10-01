@@ -76,9 +76,10 @@ export function renderSummary({ roads, events = [], incidentsNow = [], recurring
 <div class="big">${m(s?.minutes)}<small> min now</small></div>
 <div class="muted">${s ? `typical now ${m(s.usualMinutes)}${rangeText}${vs ? ` · <b>${vs}</b>` : ''}<br>night-time drive ${m(s.nightMinutes)} min` : 'no reading yet'}</div>
 ${s?.slowest && s.slowest.extraMinutes >= 3 ? `<div class="muted">Slowest now: ${esc(s.slowest.section)} (+${Math.round(s.slowest.extraMinutes)} min on its night-time pace)</div>` : ''}
+${(() => { const f = r.forecast?.list?.find((x) => x.horizon === 60); return f ? `<div class="muted">In an hour: about ${Math.round(f.minutes)} min (${Math.round(f.low)}–${Math.round(f.high)})</div>` : ''; })()}
 ${s?.detour ? '<div class="warn">The live route left the road: likely a closure or diversion.</div>' : s?.closures ? '<div class="warn">TomTom reports a closure on the route.</div>' : ''}
 ${rush ? `<div class="tip"><b>${period === 'morning' ? 'Next: morning' : 'Next: evening'}.</b> ${esc(rush.text)}${shift ? ` ${esc(shift.text)}` : ''}${(r.notes || []).length ? ` ${esc(r.notes.join(' '))}` : ''}</div>` : `<div class="muted small">Rush-hour findings appear once each half-hour has been recorded on two weekdays.</div>`}
-<div class="meta">${{ observed: 'Varies day to day (live)', partly: 'Partly live', modelled: "Mostly TomTom's pattern", unknown: 'Source not yet known' }[r.source?.kind || 'unknown']} · ${conf ? esc(conf.level) : ''} (${conf ? esc(String(r.days?.weekdays ?? '')) : ''} weekdays)${r.agreement?.compared ? ` · Google within 10% in ${Math.round((r.agreement.within10 / r.agreement.compared) * 100)}% of ${r.agreement.compared} checks` : ''} · <a href="/corridors/${esc(r.corridor.id)}/report?hours=48">details</a></div>
+<div class="meta">${{ observed: 'Varies day to day (live)', partly: 'Partly live', modelled: "Mostly TomTom's pattern", unknown: 'Source not yet known' }[r.source?.kind || 'unknown']} · ${conf ? esc(conf.level) : ''} (${conf ? esc(String(r.days?.weekdays ?? '')) : ''} weekdays)${r.agreement?.compared ? ` · Google within 10% in ${Math.round((r.agreement.within10 / r.agreement.compared) * 100)}% of ${r.agreement.compared} checks` : ''} · <a href="/corridors/${esc(r.corridor.id)}/report?hours=48">details</a> · <a href="/brief/${esc(r.corridor.id)}">brief</a></div>
 </div>`;
   };
 
@@ -101,7 +102,7 @@ th,td{padding:7px 9px;border-bottom:1px solid var(--line);text-align:left;vertic
 footer{margin:30px 0 10px;font-size:12px;color:var(--muted)}
 </style></head><body><main>
 <h1>Chennai roads today</h1>
-<p class="muted">Updated ${esc(ist(updatedAt))} IST · refreshes every 5 minutes · <a href="${esc(weeklyUrl)}">weekly report</a> · <a href="/methodology">how these numbers are made</a>${feedsOk ? '' : ' · <span class="warn">some hazard feeds are not answering</span>'}</p>
+<p class="muted">Updated ${esc(ist(updatedAt))} IST · refreshes every 5 minutes · <a href="${esc(weeklyUrl)}">weekly report</a> · <a href="/brief">one-page briefs</a> · <a href="/impact">measuring changes</a> · <a href="/methodology">how these numbers are made</a>${feedsOk ? '' : ' · <span class="warn">some hazard feeds are not answering</span>'}</p>
 
 ${roadIds.map((id) => `<h3>${esc(ROAD_NAMES[id] || id)}</h3><div class="grid">${roads.filter((r) => r.corridor.definition?.road === id).map(card).join('')}</div>`).join('')}
 
