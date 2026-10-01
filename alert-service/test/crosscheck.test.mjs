@@ -19,7 +19,8 @@ test('the request asks for live traffic through every waypoint with a narrow fie
   const body = JSON.parse(req.init.body);
   assert.equal(body.routingPreference, 'TRAFFIC_AWARE');
   assert.equal(body.travelMode, 'DRIVE');
-  assert.deepEqual(body.intermediates, [{ location: { latLng: { latitude: 12.95, longitude: 80.24 }, heading: bearing(corridor.points[0], corridor.points[2]) }, sideOfRoad: true }]);
+  assert.deepEqual(body.intermediates, [{ location: { latLng: { latitude: 12.95, longitude: 80.24 }, heading: bearing(corridor.points[0], corridor.points[2]) } }]);
+  assert.ok(!JSON.stringify(body).includes('sideOfRoad'), 'Google rejects sideOfRoad with heading');
   assert.equal(body.origin.location.heading, bearing(corridor.points[0], corridor.points[1]));
   assert.equal(body.destination.location.heading, bearing(corridor.points[1], corridor.points[2]));
   assert.equal(bearing({ lat: 13, lon: 80 }, { lat: 12, lon: 80 }), 180, 'due south');

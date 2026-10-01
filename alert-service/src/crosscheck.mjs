@@ -36,7 +36,8 @@ const waypoint = (pts, i) => {
   const p = pts[i];
   const from = pts[Math.max(0, i - 1)], to = pts[Math.min(pts.length - 1, i + 1)];
   const heading = i === 0 ? bearing(p, to) : i === pts.length - 1 ? bearing(from, p) : bearing(from, to);
-  return { location: { latLng: { latitude: Number(p.lat), longitude: Number(p.lon) }, heading }, sideOfRoad: true };
+  // Google refuses sideOfRoad together with heading; heading alone fixes the carriageway.
+  return { location: { latLng: { latitude: Number(p.lat), longitude: Number(p.lon) }, heading } };
 };
 
 /** Parse "3,6-23" into a set of IST hours. */
