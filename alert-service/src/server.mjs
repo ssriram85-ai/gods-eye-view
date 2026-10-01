@@ -13,6 +13,7 @@ import { renderMethodology } from './methodology.mjs';
 import { googleDrive, compareDrives, createCrossCheckStore, parseHours, istHour, istMonth, formalReadiness } from './crosscheck.mjs';
 import { createDriveStore, analyzeDrive, cleanTrack, errorOf } from './drives.mjs';
 import { renderDriveApp } from './driveapp.mjs';
+import { buildGeoFeed, buildHistory } from './roadfeed.mjs';
 import { renderReport } from './report.mjs';
 import { renderSummary } from './summary.mjs';
 import { createGeocoder } from './geocode.mjs';
@@ -464,7 +465,7 @@ async function readJson(req, limit = 64 * 1024) {
 // open (they are meant to be shared and cost no quota); everything that
 // registers, deletes, samples, polls or sends needs the token.
 // /mail/check and /weekly/send are admin-only (not in PUBLIC_READ).
-const PUBLIC_READ = /^\/(|summary|methodology|drive|drives|health|incidents|weekly(\/\d{4}-W\d{2}(\.json)?)?|corridors(\/[a-z0-9-]+(\/(report|latest|series|compare|travel|tips))?)?)$/;
+const PUBLIC_READ = /^\/(|summary|methodology|drive|drives|roads\/geo|roads\/history|health|incidents|weekly(\/\d{4}-W\d{2}(\.json)?)?|corridors(\/[a-z0-9-]+(\/(report|latest|series|compare|travel|tips))?)?)$/;
 const authorized = (req) =>
   !ADMIN_TOKEN ||
   req.headers.authorization === `Bearer ${ADMIN_TOKEN}` ||
@@ -621,6 +622,22 @@ const server = createServer(async (req, res) => {
       const { summaries, city, notes } = weeklyReport(week);
       if (wm[2]) return json(res, 200, { week, summaries, city, notes });
       return html(res, renderWeeklyHtml({ summaries, city, notes, week, baseUrl: REPORT_BASE_URL }));
+    }
+
+    // ---- map feeds (recorded data only; CORS-open for map clients) ----
+    if (req.method === 'GET' && (url.pathname === '/roads/geo' || url.pathname === '/roads/history')) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      if (url.pathname === '/roads/geo') {
+        const body = buildGeoFeed({ insights: allInsights(), incidentsNow: incidents.current() });
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=60' });
+        return res.end(JSON.stringify(body));
+      }
+      const hours = Math.max(1, Math.min(24 * 7, Number(url.searchParams.get('hours')) || 24));
+      const toIso = new Date(Date.now() + 60_000).toISOString();
+      const fromIso = new Date(Date.now() - hours * 3600_000).toISOString();
+      const body = buildHistory({ roads: allInsights().map((r) => ({ corridor: r.corridor, baseline: r.baseline })), travel, fromIso, toIso });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=300' });
+      return res.end(JSON.stringify(body));
     }
 
     // ---- corridors ----
