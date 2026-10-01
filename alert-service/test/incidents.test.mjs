@@ -92,7 +92,7 @@ test('Tamil Nadu filter and the public page render from stored data', () => {
   assert.match(html, /<b>Next: evening\.<\/b> Evening rush: builds from 16:30, worst at 18:30\. Leaving at 19:30 instead of 18:30 saves about 10 min/);
   assert.match(html, /an hour before the northbound direction/);
   assert.doesNotMatch(html, /Morning rush: builds from 07:30/, 'only the next commute is shown on the card');
-  assert.match(html, /Live observation · early \(3 weekdays\)/);
+  assert.match(html, /Varies day to day \(live\) · early \(3 weekdays\)/);
   assert.match(html, /Recurring jams, last 30 days/);
   assert.match(html, /<td>Sholinganallur → Karapakkam<\/td><td>3<\/td><td>7 min<\/td>/);
   assert.match(html, /TomTom has reported no accidents, breakdowns or flooding in Chennai since 2026-09-29/);

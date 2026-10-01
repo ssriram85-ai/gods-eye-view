@@ -3,7 +3,7 @@
  * defined, how far each road's findings can be trusted today, and the
  * known limits. Numbers on the page are live, from the recorded data.
  */
-import { SHIFT_MIN_SAVING, OBSERVED_SHARE_MIN, CONFIDENCE } from './insights.mjs';
+import { SHIFT_MIN_SAVING, CONFIDENCE, VARIES_MIN, SOURCE_LEVELS } from './insights.mjs';
 
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const pct = (x) => (x == null ? '—' : `${Math.round(x * 100)}%`);
@@ -29,7 +29,7 @@ dl{display:grid;grid-template-columns:max-content 1fr;gap:6px 14px}dt{font-weigh
 
 <h2>How far each road can be trusted today</h2>
 <table><tr><th>Road</th><th>Since</th><th>Weekdays</th><th>Weekend days</th><th>Source</th><th>Status</th></tr>
-${roads.map((r) => `<tr><td>${esc(r.corridor.name)}<div class="muted">${r.corridor.lengthKm} km · ${(r.corridor.definition?.sections || []).length} stretches</div></td><td>${esc(String(r.since || '—').slice(0, 10))}</td><td>${r.days.weekdays}</td><td>${r.days.weekendDays}</td><td>${r.source.kind === 'observed' ? 'Live observation' : "Mostly TomTom's model"}<div class="muted">live differed from typical in ${pct(r.source.share)} of readings</div></td><td><span class="pill" style="background:${levelColour[r.confidence.level]}">${esc(r.confidence.level)}</span></td></tr>`).join('')}
+${roads.map((r) => `<tr><td>${esc(r.corridor.name)}<div class="muted">${r.corridor.lengthKm} km · ${(r.corridor.definition?.sections || []).length} stretches</div></td><td>${esc(String(r.since || '—').slice(0, 10))}</td><td>${r.days.weekdays}</td><td>${r.days.weekendDays}</td><td>${{ observed: 'Varies day to day (live)', partly: 'Partly live', modelled: "Mostly TomTom's pattern", unknown: 'Not yet known' }[r.source.kind]}<div class="muted">${r.source.share == null ? 'needs two weekdays' : `${pct(r.source.share)} of half-hour slots differ between weekdays by ${VARIES_MIN}+ min`}</div></td><td><span class="pill" style="background:${levelColour[r.confidence.level]}">${esc(r.confidence.level)}</span></td></tr>`).join('')}
 </table>
 <p class="muted">Status: <b>early</b> under ${CONFIDENCE.provisional} weekdays; <b>provisional</b> from ${CONFIDENCE.provisional}; <b>established</b> from ${CONFIDENCE.established}. Findings marked early or provisional are shown as such and are not for formal submissions.</p>
 
@@ -38,11 +38,11 @@ ${roads.map((r) => `<tr><td>${esc(r.corridor.name)}<div class="muted">${r.corrid
 <dt>Typical</dt><dd>The median of all readings in the same 30-minute departure slot, weekdays and weekends kept apart.</dd>
 <dt>Most days</dt><dd>The 10th to 90th percentile of the same slot: the range nine days in ten fall into.</dd>
 <dt>Night-time drive</dt><dd>The quickest typical slot between midnight and 05:30. This is the reference for "extra" time. TomTom's no-traffic time is recorded but not used as the reference, because on these roads it is slower than real night drives.</dd>
-<dt>Rush</dt><dd>The busiest slot in the morning (05:00–13:00) or afternoon and evening (13:00–24:00), and the span either side where the road stays at least 30% of the way from its night-time drive to that peak. The span is found over the whole day, never inside a fixed window.</dd>
+<dt>Rush</dt><dd>The busiest slot in the morning (05:00–13:00) and in the afternoon and evening (13:00–24:00), and the span either side where the road stays at least 30% of the way from its night-time drive to that peak, found over the whole day, never inside a fixed window. The two spans meet at the quietest slot between the peaks; when even that midday low stays busy, the day is reported as one continuous busy period with two peaks.</dd>
 <dt>Departure advice</dt><dd>Given only when leaving up to an hour earlier or later than the peak saves at least ${SHIFT_MIN_SAVING} minutes. Otherwise the page says there is no quick win.</dd>
 <dt>Bottleneck</dt><dd>A stretch is named only if it carries at least a third of the extra time at the peak and at least one and a half times as much as the next stretch. Otherwise the delay is described as spread along the road.</dd>
 <dt>Unusual now</dt><dd>The live drive is at least 5 minutes and 12% over typical for this slot, or more than 3 minutes above its "most days" range.</dd>
-<dt>Live observation</dt><dd>A reading counts as observed when it differs from TomTom's typical time by at least 2 minutes or 5%. A road is labelled live observation when ${Math.round(OBSERVED_SHARE_MIN * 100)}% or more of its readings are observed.</dd>
+<dt>Live or pattern</dt><dd>TomTom's "live" time falls back on its historical pattern where it has little live data, and a pattern repeats itself every day. So each road is tested on day-to-day variation: the share of weekday half-hour slots, recorded on at least two weekdays, whose drive differed between days by ${VARIES_MIN} minutes or more. ${Math.round(SOURCE_LEVELS.live * 100)}% or more: varies day to day (live). ${Math.round(SOURCE_LEVELS.partly * 100)}–${Math.round(SOURCE_LEVELS.live * 100)}%: partly live. Below ${Math.round(SOURCE_LEVELS.partly * 100)}%: mostly TomTom's pattern, so its day-to-day changes are not well observed.</dd>
 <dt>Recurring jam</dt><dd>A place (about 330 m across) where TomTom reports a major jam (magnitude 3 or 4, or at least 5 minutes of delay) on two or more days.</dd>
 </dl>
 

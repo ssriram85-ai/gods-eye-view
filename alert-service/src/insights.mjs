@@ -23,7 +23,6 @@
 const IST_MS = 330 * 60_000;
 export const SLOT_MIN = 30;
 export const SHIFT_MIN_SAVING = 6;
-export const OBSERVED_SHARE_MIN = 0.15;
 export const CONFIDENCE = Object.freeze({ provisional: 5, established: 10 });
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -120,19 +119,37 @@ export function confidenceOf(weekdays) {
   return { level: 'early', text: `early data: ${weekdays} weekday${weekdays === 1 ? '' : 's'} recorded, provisional at ${CONFIDENCE.provisional}` };
 }
 
-/** How much of a corridor's record is live observation rather than TomTom's model. */
+/**
+ * How much of a corridor's record reflects live conditions rather than
+ * TomTom's historical pattern. A model repeats itself; real traffic does
+ * not. So the test is day-to-day variation: in what share of weekday
+ * half-hour slots (recorded on at least two weekdays) did the drive differ
+ * between days by VARIES_MIN minutes or more.
+ */
+export const VARIES_MIN = 3;
+export const SOURCE_LEVELS = Object.freeze({ live: 0.15, partly: 0.06 });
 export function sourceOf(rows, sections) {
-  const samples = samplesOf(rows, sections);
-  const observed = samples.filter((s) => isObserved(s.travel, s.usual)).length;
-  const share = samples.length ? observed / samples.length : 0;
-  return {
-    share,
-    kind: share >= OBSERVED_SHARE_MIN ? 'observed' : 'modelled',
-    text:
-      share >= OBSERVED_SHARE_MIN
-        ? `live observations: in ${Math.round(share * 100)}% of readings the live time differed from TomTom's typical time`
-        : `mostly TomTom's typical pattern: live times matched TomTom's history in ${Math.round((1 - share) * 100)}% of readings, so day-to-day changes here are not well observed`,
-  };
+  const perSlotDay = new Map();
+  for (const s of samplesOf(rows, sections)) {
+    if (dayType(s.ts) !== 'weekday') continue;
+    const key = istSlot(s.ts);
+    const days = perSlotDay.get(key) || new Map();
+    const d = dayKey(s.ts);
+    const v = days.get(d) || { sum: 0, n: 0 };
+    v.sum += s.travel / 60;
+    v.n++;
+    days.set(d, v);
+    perSlotDay.set(key, days);
+  }
+  const spreads = [...perSlotDay.values()].filter((days) => days.size >= 2).map((days) => {
+    const means = [...days.values()].map((v) => v.sum / v.n);
+    return Math.max(...means) - Math.min(...means);
+  });
+  if (!spreads.length) return { share: null, slots: 0, kind: 'unknown', text: 'not yet known: needs the same times recorded on two weekdays' };
+  const share = spreads.filter((x) => x >= VARIES_MIN).length / spreads.length;
+  const kind = share >= SOURCE_LEVELS.live ? 'observed' : share >= SOURCE_LEVELS.partly ? 'partly' : 'modelled';
+  const lead = { observed: 'varies day to day (live)', partly: 'partly live', modelled: "mostly TomTom's typical pattern" }[kind];
+  return { share, slots: spreads.length, kind, text: `${lead}: in ${Math.round(share * 100)}% of half-hour slots the drive differed between weekdays by ${VARIES_MIN} minutes or more` };
 }
 
 /** Our own reference drive: the quickest typical slot between midnight and 05:30. */
@@ -150,42 +167,39 @@ const PERIODS = [
 ];
 
 /**
- * The shape of each rush: where it peaks (searched over a broad half-day),
- * and how far either side the road stays at least 30% of the way from its
- * night-time drive to that peak. Searching the whole day means the edges
- * come from the data, not from a window.
+ * The shape of each rush: the busiest slot in the morning (05:00–13:00) and
+ * in the afternoon and evening (13:00–24:00), and the span either side where
+ * the road stays at least 30% of the way from its night-time drive to that
+ * peak. The two spans meet at the quietest slot between the peaks (the
+ * midday low); if even that low stays above both thresholds the day is
+ * one continuous busy period, and the result says so.
  */
 export function rushShapes(slots, baseline) {
   if (!baseline || slots.length < 6) return [];
   const bySlot = new Map(slots.map((s) => [s.slot, s]));
-  const out = [];
-  for (const p of PERIODS) {
-    const inPeriod = slots.filter((s) => s.slot >= p.from && s.slot < p.to);
-    if (!inPeriod.length) continue;
-    const peak = inPeriod.reduce((a, s) => (s.minutes > a.minutes ? s : a));
+  const peakIn = (from, to) => {
+    const xs = slots.filter((s) => s.slot >= from && s.slot < to);
+    return xs.length ? xs.reduce((a, s) => (s.minutes > a.minutes ? s : a)) : null;
+  };
+  const mPeak = peakIn(5 * 60, 13 * 60), ePeak = peakIn(13 * 60, 24 * 60);
+  const between = mPeak && ePeak ? slots.filter((s) => s.slot > mPeak.slot && s.slot < ePeak.slot) : [];
+  const trough = between.length ? between.reduce((a, s) => (s.minutes < a.minutes ? s : a)) : null;
+  const shape = (period, peak, lo, hi) => {
+    if (!peak) return null;
     const extra = peak.minutes - baseline.minutes;
-    if (extra < 5) {
-      out.push({ period: p.id, none: true, peak, extraMinutes: extra });
-      continue;
-    }
+    if (extra < 5) return { period, none: true, peak, extraMinutes: extra };
     const threshold = baseline.minutes + 0.3 * extra;
     let start = peak.slot, end = peak.slot;
-    for (let t = peak.slot - SLOT_MIN; t >= 0 && bySlot.get(t)?.minutes >= threshold; t -= SLOT_MIN) start = t;
-    for (let t = peak.slot + SLOT_MIN; t < 24 * 60 && bySlot.get(t)?.minutes >= threshold; t += SLOT_MIN) end = t;
-    out.push({
-      period: p.id,
-      start,
-      startLabel: slotLabel(start),
-      peak,
-      endLabel: slotLabel(end + SLOT_MIN),
-      end: end + SLOT_MIN,
-      extraMinutes: extra,
-      baselineMinutes: baseline.minutes,
-    });
+    for (let t = peak.slot - SLOT_MIN; t >= lo && bySlot.get(t)?.minutes >= threshold; t -= SLOT_MIN) start = t;
+    for (let t = peak.slot + SLOT_MIN; t < hi && bySlot.get(t)?.minutes >= threshold; t += SLOT_MIN) end = t;
+    return { period, start, startLabel: slotLabel(start), peak, end: end + SLOT_MIN, endLabel: slotLabel(end + SLOT_MIN), extraMinutes: extra, baselineMinutes: baseline.minutes, threshold };
+  };
+  const morning = shape('morning', mPeak, 0, trough ? trough.slot : 24 * 60);
+  const evening = shape('evening', ePeak, trough ? trough.slot + SLOT_MIN : 0, 24 * 60);
+  const out = [morning, evening].filter(Boolean);
+  if (morning && evening && !morning.none && !evening.none && trough && trough.minutes >= Math.min(morning.threshold, evening.threshold)) {
+    for (const r of out) r.continuous = { from: morning.startLabel, to: evening.endLabel, low: trough };
   }
-  // A morning that runs straight into the evening is one long busy day.
-  const [m, e] = out;
-  if (m && e && !m.none && !e.none && m.end >= e.start) for (const r of out) r.continuous = true;
   return out;
 }
 
@@ -212,6 +226,7 @@ export function commuterTips(corridor, profile, { minDays = 2 } = {}) {
       continue;
     }
     const rg = range(r.peak);
+    const peakText = `about ${r0(r.peak.minutes)} min${rg ? `, ${rg}` : ''}`;
     tips.push({
       kind: 'rush',
       period: r.period,
@@ -220,7 +235,9 @@ export function commuterTips(corridor, profile, { minDays = 2 } = {}) {
       end: r.endLabel,
       peakMinutes: r.peak.minutes,
       baselineMinutes: baseline.minutes,
-      text: `${name} rush: builds from ${r.startLabel}, worst at ${r.peak.label} (about ${r0(r.peak.minutes)} min${rg ? `, ${rg}` : ''}), eases by ${r.endLabel}. The same drive takes ${r0(baseline.minutes)} min at night.`,
+      text: r.continuous
+        ? `${name} peak at ${r.peak.label} (${peakText}). The road is busy from ${r.continuous.from} to ${r.continuous.to} and between the peaks eases only to ${r0(r.continuous.low.minutes)} min (${r.continuous.low.label}); at night the drive takes ${r0(baseline.minutes)} min.`
+        : `${name} rush: builds from ${r.startLabel}, worst at ${r.peak.label} (${peakText}), eases by ${r.endLabel}. The same drive takes ${r0(baseline.minutes)} min at night.`,
     });
     // A realistic change: up to an hour either side of the peak.
     const near = slots.filter((s) => s.slot !== r.peak.slot && Math.abs(s.slot - r.peak.slot) <= 60);
@@ -239,7 +256,6 @@ export function commuterTips(corridor, profile, { minDays = 2 } = {}) {
       tips.push({ kind: 'bottleneck', period: r.period, section: `${sections[top.i].from} → ${sections[top.i].to}`, share: top.extra / total, text: `At ${r.peak.label}, ${sections[top.i].from} → ${sections[top.i].to} carries ${r0((top.extra / total) * 100)}% of the extra time: ${r0(top.minutes)} min for ${sections[top.i].lengthKm} km.` });
     else if (total >= 3) tips.push({ kind: 'spread', period: r.period, text: `At ${r.peak.label} the delay is spread along the road; no single stretch stands out.` });
   }
-  if (rushes.length && rushes[0].continuous) tips.push({ kind: 'continuous', text: 'Between the two rushes the road never returns to its night-time pace.' });
   return { tips, rushes, baseline, enoughData: true, daysRecorded };
 }
 

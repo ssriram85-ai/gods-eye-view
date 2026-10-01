@@ -91,7 +91,7 @@ test('the methodology page states definitions, per-road status and limits from l
     notes: [{ at: '2026-10-18T18:30:00.000Z', text: 'Public holiday: Ayudha Pooja' }],
   });
   assert.match(html, /How these numbers are made/);
-  assert.match(html, /Mostly TomTom's model<div class="muted">live differed from typical in 2% of readings/);
+  assert.match(html, /Mostly TomTom's pattern<div class="muted">2% of half-hour slots differ between weekdays by 3\+ min/);
   assert.match(html, />early</);
   assert.match(html, /Night-time drive/);
   assert.match(html, /at least 6 minutes/);

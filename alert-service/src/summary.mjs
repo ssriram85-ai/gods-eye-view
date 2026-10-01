@@ -78,7 +78,7 @@ export function renderSummary({ roads, events = [], incidentsNow = [], recurring
 ${s?.slowest && s.slowest.extraMinutes >= 3 ? `<div class="muted">Slowest now: ${esc(s.slowest.section)} (+${Math.round(s.slowest.extraMinutes)} min on its night-time pace)</div>` : ''}
 ${s?.detour ? '<div class="warn">The live route left the road: likely a closure or diversion.</div>' : s?.closures ? '<div class="warn">TomTom reports a closure on the route.</div>' : ''}
 ${rush ? `<div class="tip"><b>${period === 'morning' ? 'Next: morning' : 'Next: evening'}.</b> ${esc(rush.text)}${shift ? ` ${esc(shift.text)}` : ''}${(r.notes || []).length ? ` ${esc(r.notes.join(' '))}` : ''}</div>` : `<div class="muted small">Rush-hour findings appear once each half-hour has been recorded on two weekdays.</div>`}
-<div class="meta">${r.source?.kind === 'observed' ? 'Live observation' : "Mostly TomTom's typical pattern"} · ${conf ? esc(conf.level) : ''} (${conf ? esc(String(r.days?.weekdays ?? '')) : ''} weekdays) · <a href="/corridors/${esc(r.corridor.id)}/report?hours=48">details</a></div>
+<div class="meta">${{ observed: 'Varies day to day (live)', partly: 'Partly live', modelled: "Mostly TomTom's pattern", unknown: 'Source not yet known' }[r.source?.kind || 'unknown']} · ${conf ? esc(conf.level) : ''} (${conf ? esc(String(r.days?.weekdays ?? '')) : ''} weekdays) · <a href="/corridors/${esc(r.corridor.id)}/report?hours=48">details</a></div>
 </div>`;
   };
 

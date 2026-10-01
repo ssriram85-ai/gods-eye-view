@@ -186,7 +186,7 @@ export function renderWeeklyHtml({ summaries, city, notes = [], week, baseUrl = 
   const levelBg = { established: '#1e8449', provisional: '#b7950b', early: '#7f8c8d' };
   const link = (s) => (baseUrl ? `<a href="${esc(baseUrl)}/corridors/${esc(s.corridor.id)}/report?hours=168" style="color:#1a5fb4">live report</a>` : '');
   const findings = (s) => {
-    const list = s.tips.filter((t) => t.kind !== 'continuous').map((t) => t.text).concat(s.notes || []);
+    const list = s.tips.map((t) => t.text).concat(s.notes || []);
     if (!list.length) return `<p style="margin:0 0 8px;color:#777;font-size:13px">Rush windows and advice appear once each half-hour has been recorded on two weekdays.</p>`;
     const firm = s.confidence.level === 'established';
     return `<p style="margin:0 0 4px;font-size:13px;font-weight:600;color:${firm ? '#1e8449' : '#7f6000'}">${firm ? 'Findings' : `Early observations, not for formal use (${esc(s.confidence.text)})`}</p><ul style="margin:0 0 8px;padding-left:18px;color:#333">${list.map((t) => `<li style="margin:0 0 3px">${esc(t)}</li>`).join('')}</ul>`;
@@ -194,7 +194,7 @@ export function renderWeeklyHtml({ summaries, city, notes = [], week, baseUrl = 
   const section = (s) => `
 <div style="margin:0 0 26px">
 <h3 style="font-size:15px;margin:0 0 4px;color:#111">${esc(s.corridor.name)}</h3>
-<p style="margin:0 0 6px">${tag(s.source.kind === 'observed' ? 'Live observation' : "Mostly TomTom's model", s.source.kind === 'observed' ? '#1a5fb4' : '#7f8c8d')}${tag(s.confidence.level, levelBg[s.confidence.level])}</p>
+<p style="margin:0 0 6px">${tag({ observed: 'Varies day to day (live)', partly: 'Partly live', modelled: "Mostly TomTom's pattern", unknown: 'Source not yet known' }[s.source.kind], { observed: '#1a5fb4', partly: '#5d6d7e', modelled: '#7f8c8d', unknown: '#7f8c8d' }[s.source.kind])}${tag(s.confidence.level, levelBg[s.confidence.level])}</p>
 <p style="margin:0 0 8px;color:#333">${esc(headline(s))}</p>
 ${findings(s)}
 ${s.periods.length ? `<table style="border-collapse:collapse;width:100%;font-size:13px" cellpadding="0" cellspacing="0">
@@ -231,7 +231,7 @@ export function renderWeeklyText({ summaries, city, week, baseUrl = '' }) {
   return [
     `Chennai roads, week ${week.key} (${week.label}, IST)`,
     '',
-    ...summaries.flatMap((s) => [`${headline(s)} [${s.source.kind === 'observed' ? 'live observation' : "mostly TomTom's model"}; ${s.confidence.level}]`, ...s.tips.filter((t) => t.kind !== 'continuous').map((t) => `  - ${t.text}`), '']),
+    ...summaries.flatMap((s) => [`${headline(s)} [${{ observed: 'varies day to day', partly: 'partly live', modelled: "mostly TomTom's pattern", unknown: 'source not yet known' }[s.source.kind]}; ${s.confidence.level}]`, ...s.tips.map((t) => `  - ${t.text}`), '']),
     city ? `Incidents this week: ${city.counts.map((c) => `${c.n} ${c.category}`).join(', ') || 'none'}` : '',
     ...(city?.recurring || []).slice(0, 5).map((h) => `  Recurring jam: ${h.place || 'unnamed road'} (${h.days} days, typical delay ${h.typicalDelayMinutes ?? '?'} min) https://www.google.com/maps?q=${h.lat},${h.lon}`),
     '',

@@ -90,7 +90,7 @@ test('city incidents: recurring jams and safety spots, and the rendered email', 
   assert.match(html, /Chennai roads · week 2026-W39/);
   assert.match(html, /All roads have enough weekdays recorded for established findings/);
   assert.match(html, />Findings</);
-  assert.match(html, /Live observation/);
+  assert.match(html, /Varies day to day \(live\)/);
   assert.match(html, /Evening <span style="color:#888">16:30–20:30/);
   assert.match(html, /\+4 min/);
   assert.match(html, /rain 10 mm, 2 wet hours, wet-hour drives \+2 min vs typical/);
@@ -101,7 +101,7 @@ test('city incidents: recurring jams and safety spots, and the rendered email', 
   assert.match(html, /gev\.example\/methodology/);
   assert.doesNotMatch(html, /<svg/);
   const text = renderWeeklyText({ summaries: [s], city, week, baseUrl: 'https://gev.example' });
-  assert.match(text, /\[live observation; established\]/);
+  assert.match(text, /\[varies day to day; established\]/);
   assert.match(text, /Recurring jam: Sholinganallur → Karapakkam \(2 days, typical delay 7 min\)/);
 });
 

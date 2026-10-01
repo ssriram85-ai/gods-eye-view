@@ -76,7 +76,7 @@ function travelSection(corridor, t, notes, hours) {
   const wk = (t.profile?.weekday || []).filter((p) => p.days >= 1);
   const night = t.baseline;
   const byPeriod = (period) => (t.tips || []).filter((x) => x.period === period);
-  return `<p class="labels"><span class="lab">${t.source?.kind === 'observed' ? 'Live observation' : "Mostly TomTom's typical pattern"}</span><span class="lab">${esc(t.confidence?.text || '')}</span></p>
+  return `<p class="labels"><span class="lab">${{ observed: 'Varies day to day (live)', partly: 'Partly live', modelled: "Mostly TomTom's pattern", unknown: 'Source not yet known' }[t.source?.kind || 'unknown']}</span><span class="lab">${esc(t.confidence?.text || '')}</span></p>
 ${t.source ? `<p class="muted">Source: ${esc(t.source.text)}.</p>` : ''}
 <div class="grid">
 <div class="tile"><span class="muted">Now (${st ? ist(st.ts) : '—'})</span><b style="color:${LEVEL_COLOR[st?.level || 'unknown']}">${st ? Math.round(st.minutes) + ' min' : '—'}</b><span class="muted">${st?.unusual ? 'UNUSUAL for this time' : st?.level || ''}</span></div>

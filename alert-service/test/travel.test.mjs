@@ -159,9 +159,14 @@ test('confidence, source labels, next commute and cross-road notes', () => {
   assert.equal(confidenceOf(3).level, 'early');
   assert.equal(confidenceOf(5).level, 'provisional');
   assert.equal(confidenceOf(10).level, 'established');
-  const flat = [{ ts: '2026-09-29T10:00:00Z', leg: 0, travel_s: 600, historic_s: 600 }, { ts: '2026-09-29T10:15:00Z', leg: 0, travel_s: 610, historic_s: 600 }];
-  assert.equal(sourceOf(flat, 1).kind, 'modelled');
-  assert.equal(sourceOf([{ ts: '2026-09-29T10:00:00Z', leg: 0, travel_s: 900, historic_s: 600 }], 1).kind, 'observed');
+  // Same half-hour (10:00 IST) on two weekdays: identical drives look like a pattern, 5 minutes apart looks live.
+  const at = (day, min) => new Date(Date.parse(`${day}T10:00:00+05:30`) + min * 60_000).toISOString();
+  const day = (d, minutes) => [0, 15].map((m) => ({ ts: at(d, m), leg: 0, travel_s: minutes * 60, historic_s: 1800 }));
+  assert.equal(sourceOf([...day('2026-09-29', 30), ...day('2026-09-30', 30.5)], 1).kind, 'modelled');
+  const live = sourceOf([...day('2026-09-29', 30), ...day('2026-09-30', 35)], 1);
+  assert.equal(live.kind, 'observed');
+  assert.match(live.text, /varies day to day \(live\): in 100% of half-hour slots the drive differed between weekdays by 3 minutes or more/);
+  assert.equal(sourceOf(day('2026-09-29', 30), 1).kind, 'unknown', 'one weekday is not enough');
   assert.equal(nextCommute('2026-10-01T04:00:00Z'), 'morning'); // 09:30 IST
   assert.equal(nextCommute('2026-10-01T09:00:00Z'), 'evening'); // 14:30 IST
   assert.equal(nextCommute('2026-10-01T17:00:00Z'), 'morning'); // 22:30 IST
@@ -185,4 +190,28 @@ test('advice waits for two days of data', () => {
   const { tips, enoughData } = commuterTips(corridor, travelProfile(oneDay, { sections: 3 }));
   assert.equal(enoughData, false);
   assert.equal(tips.length, 0);
+});
+
+test('a road busy all day is described as one busy period with two peaks and a midday low', () => {
+  // Shaped like OMR southbound: 36 min at night, morning peak 56 at 09:30, midday low 47 at 14:00, evening peak 63 at 18:30.
+  const at = (t) => {
+    const h = t / 60;
+    if (h < 7 || h >= 22) return 36;
+    if (h < 9.5) return 36 + (h - 7) * 8; // up to 56
+    if (h < 14) return 56 - (h - 9.5) * 2; // down to 47
+    if (h < 18.5) return 47 + (h - 14) * (16 / 4.5); // up to 63
+    return 63 - (h - 18.5) * (27 / 3.5); // down to 36 by 22:00
+  };
+  const weekday = [];
+  for (let t = 0; t < 1440; t += 30) {
+    const minutes = at(t);
+    weekday.push({ slot: t, label: `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`, days: 3, samples: 6, minutes, p10: minutes - 2, p90: minutes + 3, sectionMinutes: [minutes / 2, minutes / 2], observedShare: 0.3 });
+  }
+  const corridor = { definition: { sections: [{ from: 'A', to: 'B', lengthKm: 11 }, { from: 'B', to: 'C', lengthKm: 11 }] } };
+  const { tips, rushes } = commuterTips(corridor, { weekday, weekend: [] });
+  assert.ok(rushes.every((r) => r.continuous), 'midday low stays above both thresholds');
+  const text = tips.map((t) => t.text).join('\n');
+  assert.match(text, /Morning peak at 09:30 \(about 56 min, 54–59 on most days\)\. The road is busy from 08:00 to 21:00 and between the peaks eases only to 47 min \(14:00\); at night the drive takes 36 min\./);
+  assert.match(text, /Evening peak at 18:30 \(about 63 min, 61–66 on most days\)/);
+  assert.doesNotMatch(text, /eases by 00:00|builds from 07:30/);
 });
