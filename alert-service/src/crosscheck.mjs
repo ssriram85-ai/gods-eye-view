@@ -100,8 +100,16 @@ export async function googleDrive(corridor, { key, fetchImpl = fetch, timeoutMs 
  * Compare one Google answer with the TomTom reading for the same moment and
  * return only the outcome. `tomtom` is { rows: route_samples rows } from the
  * same corridor; `lengthKm` is the corridor's resolved length.
+ *
+ * Congestion is judged for both sources against one shared yardstick: our
+ * recorded night-time drive for the road (`nightMinutes`). Judging each
+ * source against its own no-traffic time was unfair: TomTom's no-traffic
+ * time is slower than real night drives, so TomTom under-called congestion.
+ * Google's own night-time times cannot be used because they may not be
+ * stored. Without a night-time drive yet, congestion is left unjudged.
  */
-export function compareDrives(google, tomtom, lengthKm) {
+export const CONGESTION = Object.freeze({ heavyRatio: 1.4, rule: 2 });
+export function compareDrives(google, tomtom, lengthKm, { nightMinutes = null } = {}) {
   const rows = tomtom?.rows || [];
   const t = rows.reduce((a, r) => a + (r.travel_s || 0), 0);
   const tFree = rows.reduce((a, r) => a + (r.no_traffic_s || 0), 0);
@@ -110,9 +118,13 @@ export function compareDrives(google, tomtom, lengthKm) {
     return { outcome: 'route-differs', note: google.meters / 1000 > lengthKm ? 'longer' : 'shorter' };
   const diff = (t - google.seconds) / google.seconds;
   const outcome = Math.abs(diff) <= 0.1 ? 'within10' : Math.abs(diff) <= 0.2 ? 'within20' : diff > 0 ? 'tomtom-higher' : 'tomtom-lower';
-  const gCongested = google.staticSeconds ? google.seconds / google.staticSeconds >= 1.2 : null;
-  const tCongested = tFree ? t / tFree >= 1.2 : null;
-  const congestionAgree = gCongested == null || tCongested == null ? null : gCongested === tCongested ? 1 : 0;
+  let congestionAgree = null;
+  if (nightMinutes > 0) {
+    const gHeavy = google.seconds / 60 / nightMinutes >= CONGESTION.heavyRatio;
+    const tHeavy = t / 60 / nightMinutes >= CONGESTION.heavyRatio;
+    congestionAgree = gHeavy === tHeavy ? 1 : 0;
+  }
+  void tFree;
   let legsWithin20 = null;
   if (google.legs?.length === rows.length) {
     legsWithin20 = 0;
@@ -121,7 +133,7 @@ export function compareDrives(google, tomtom, lengthKm) {
       if (g.seconds && leg?.travel_s && Math.abs(leg.travel_s - g.seconds) / g.seconds <= 0.2) legsWithin20++;
     });
   }
-  return { outcome, congestionAgree, legsWithin20, legs: rows.length };
+  return { outcome, congestionAgree, congestionRule: congestionAgree == null ? null : CONGESTION.rule, legsWithin20, legs: rows.length };
 }
 
 export function createCrossCheckStore(db) {
@@ -132,9 +144,11 @@ export function createCrossCheckStore(db) {
       PRIMARY KEY (corridor_id, ts)
     );
   `);
-  const insert = db.prepare('INSERT OR REPLACE INTO crosscheck (corridor_id, ts, tomtom_ts, outcome, congestion_agree, legs_within20, legs, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+  // Which congestion rule a row was judged by; rows from the first rule (each source against its own no-traffic time) stay out of the figures.
+  if (!db.prepare('PRAGMA table_info(crosscheck)').all().some((c) => c.name === 'congestion_rule')) db.exec('ALTER TABLE crosscheck ADD COLUMN congestion_rule INTEGER');
+  const insert = db.prepare('INSERT OR REPLACE INTO crosscheck (corridor_id, ts, tomtom_ts, outcome, congestion_agree, legs_within20, legs, error, congestion_rule) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
   return {
-    record: (corridorId, ts, tomtomTs, r) => insert.run(corridorId, ts, tomtomTs ?? null, r.outcome, r.congestionAgree ?? null, r.legsWithin20 ?? null, r.legs ?? null, r.error ?? null),
+    record: (corridorId, ts, tomtomTs, r) => insert.run(corridorId, ts, tomtomTs ?? null, r.outcome, r.congestionAgree ?? null, r.legsWithin20 ?? null, r.legs ?? null, r.error ?? null, r.congestionRule ?? null),
     /** Requests made in an IST calendar month (errors included: they may still be billed). */
     callsInMonth(month) {
       const start = new Date(Date.parse(`${month}-01T00:00:00+05:30`)).toISOString();
@@ -157,7 +171,8 @@ export function createCrossCheckStore(db) {
           SUM(CASE WHEN outcome = 'tomtom-lower' THEN 1 ELSE 0 END) AS tomtom_lower,
           SUM(CASE WHEN outcome = 'route-differs' THEN 1 ELSE 0 END) AS route_differs,
           SUM(CASE WHEN outcome = 'error' THEN 1 ELSE 0 END) AS errors,
-          SUM(COALESCE(congestion_agree, 0)) AS congestion_agree, SUM(CASE WHEN congestion_agree IS NULL THEN 0 ELSE 1 END) AS congestion_known,
+          SUM(CASE WHEN congestion_rule = ${CONGESTION.rule} THEN COALESCE(congestion_agree, 0) ELSE 0 END) AS congestion_agree,
+          SUM(CASE WHEN congestion_rule = ${CONGESTION.rule} AND congestion_agree IS NOT NULL THEN 1 ELSE 0 END) AS congestion_known,
           SUM(COALESCE(legs_within20, 0)) AS legs_within20, SUM(CASE WHEN legs_within20 IS NULL THEN 0 ELSE legs END) AS legs_known,
           MIN(ts) AS first, MAX(ts) AS last
         FROM crosscheck WHERE ts >= ? GROUP BY corridor_id`).all(fromIso);
@@ -170,7 +185,7 @@ export function agreementText(row) {
   if (!row || !row.compared) return 'no comparisons yet';
   const pct = (a, b) => `${Math.round((a / b) * 100)}%`;
   const parts = [`within 10% of Google in ${pct(row.within10, row.compared)} and within 20% in ${pct(row.within20, row.compared)} of ${row.compared} checks`];
-  if (row.congestion_known) parts.push(`both sources agreed on whether the road was congested ${pct(row.congestion_agree, row.congestion_known)} of the time`);
+  if (row.congestion_known) parts.push(`both put the road in the same state (heavy or not) ${pct(row.congestion_agree, row.congestion_known)} of the time`);
   if (row.legs_known) parts.push(`stretch by stretch, ${pct(row.legs_within20, row.legs_known)} within 20%`);
   return parts.join('; ');
 }

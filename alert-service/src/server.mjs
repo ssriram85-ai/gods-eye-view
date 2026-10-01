@@ -190,6 +190,14 @@ function rollUp() {
  * the same drives and keep only the comparison outcome.
  */
 let lastCrossCheckHour = null;
+/** The road's recorded night-time drive, the shared yardstick for congestion. */
+function nightFor(c) {
+  try {
+    return roadInsight(c).baseline?.minutes ?? null;
+  } catch {
+    return null;
+  }
+}
 async function crossCheckIfDue({ force = false } = {}) {
   if (!GOOGLE_ROUTES_KEY) return null;
   const now = Date.now();
@@ -213,7 +221,7 @@ async function crossCheckIfDue({ force = false } = {}) {
     if (!tomtom.ts || now - Date.parse(tomtom.ts) > 10 * 60_000) continue; // no TomTom reading for this moment
     try {
       const g = await googleDrive(c, { key: GOOGLE_ROUTES_KEY });
-      const r = compareDrives(g, tomtom, c.lengthKm);
+      const r = compareDrives(g, tomtom, c.lengthKm, { nightMinutes: nightFor(c) });
       crosschecks.record(c.id, ts, tomtom.ts, r);
       outcomes.push(`${c.id}:${r.outcome}${r.note ? `(${r.note})` : ''}`);
     } catch (error) {

@@ -64,7 +64,7 @@ ${google ? `<p>${esc(hoursText.charAt(0).toUpperCase() + hoursText.slice(1))} (I
 <li><b>Same moment:</b> the TomTom reading used is at most 10 minutes old.</li>
 <li><b>Same road:</b> if Google's route is more than 10% longer or shorter than the road, the two are not describing the same drive; the check is counted as "route differs" and left out of the agreement figures.</li>
 <li><b>Agreement:</b> TomTom's whole-road time within 10%, or within 20%, of Google's; otherwise which source was higher.</li>
-<li><b>Congestion:</b> whether both sources saw the road as congested (live time at least 20% over that source's own no-traffic time).</li>
+<li><b>Congestion:</b> whether both sources put the road in the same state, heavy or not. Both are judged against the same yardstick: the road's recorded night-time drive, with heavy meaning at least 40% over it (the "heavy" level on the public page). Each source's own no-traffic time is not used, because TomTom's is slower than real night drives and would make it under-call congestion.</li>
 <li><b>Stretches:</b> how many of the stretches between junctions agree within 20%.</li>
 </ul>
 <p>Google Maps Platform's terms allow storing only map coordinates, for up to 30 days, so Google's travel times are discarded straight after the comparison; only the outcomes above are kept. Published travel times are always TomTom's. The check runs about 4,700 times a month, inside Google's free allowance, and stops for the month at ${esc(String(crosscheck?.cap ?? 4800))}.</p>` : '<p>A second traffic source (Google Routes) is being connected. Until it is, every travel time on this site rests on TomTom alone.</p>'}
@@ -117,7 +117,7 @@ ${notes.length ? `<h2>Events and changes on record</h2><div class="wrap"><table>
 <ul>
 <li><b>24–29 September 2026:</b> TomTom point speeds. On OMR those points shared a few long road segments, which hid local jams, so the method was retired.</li>
 <li><b>29 September 2026, 11:30 IST:</b> section travel times on OMR, Anna Salai, GST Road and ECR, both directions. All findings rest on these.</li>
-<li><b>1 October 2026:</b> findings rebuilt around rush shapes, ranges and the night-time drive; rainfall and holidays added; the Google check started (waypoints pinned to the direction of travel from its second hour).</li>
+<li><b>1 October 2026:</b> findings rebuilt around rush shapes, ranges and the night-time drive; rainfall and holidays added; the Google check started (waypoints pinned to the direction of travel from its second hour). The same evening the congestion test changed from "each source against its own no-traffic time" to "both against the road's night-time drive"; checks under the first rule are left out of the congestion figure.</li>
 </ul>
 </main></body></html>`;
 }

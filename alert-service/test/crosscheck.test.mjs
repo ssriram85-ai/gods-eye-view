@@ -38,14 +38,18 @@ test('errors carry Google\'s message; a missing key is refused before any reques
 
 test('comparison keeps only outcomes, never Google\'s numbers', () => {
   const g = { seconds: 3600, staticSeconds: 2700, meters: 22600, legs: [{ seconds: 1500 }, { seconds: 2100 }] };
-  const same = compareDrives(g, tomtom([26, 37], [18, 20]), 22.6);
-  assert.deepEqual(same, { outcome: 'within10', congestionAgree: 1, legsWithin20: 2, legs: 2 });
+  const same = compareDrives(g, tomtom([26, 37], [18, 20]), 22.6, { nightMinutes: 40 });
+  assert.deepEqual(same, { outcome: 'within10', congestionAgree: 1, congestionRule: 2, legsWithin20: 2, legs: 2 }, 'Google 60 and TomTom 63 min are both heavy against a 40-min night drive');
   assert.ok(!Object.values(same).includes(3600) && !Object.values(same).includes(2700), 'no Google value is returned for storage');
   assert.equal(compareDrives(g, tomtom([30, 40], [18, 20]), 22.6).outcome, 'within20'); // 70 vs 60 min = +16.7%
   assert.equal(compareDrives(g, tomtom([40, 40], [18, 20]), 22.6).outcome, 'tomtom-higher');
   assert.equal(compareDrives(g, tomtom([20, 20], [18, 20]), 22.6).outcome, 'tomtom-lower');
   assert.deepEqual(compareDrives({ ...g, meters: 27000 }, tomtom([26, 37], [18, 20]), 22.6), { outcome: 'route-differs', note: 'longer' });
-  assert.equal(compareDrives(g, tomtom([26, 37], [26, 37]), 22.6).congestionAgree, 0, 'Google congested (+33%), TomTom not');
+  assert.equal(compareDrives(g, tomtom([20, 30], [20, 30]), 22.6, { nightMinutes: 40 }).congestionAgree, 0, 'Google 60 min is heavy (1.5x), TomTom 50 min is not (1.25x)');
+  assert.equal(compareDrives(g, tomtom([26, 37], [18, 20]), 22.6).congestionAgree, null, 'no night-time drive yet: congestion not judged');
+  assert.equal(compareDrives(g, tomtom([26, 37], [18, 20]), 22.6).congestionRule, null);
+  // The old rule (each against its own no-traffic time) would have called this a disagreement: TomTom 63 vs its 38 free = 1.66x, Google 60 vs 45 static = 1.33x.
+  assert.equal(compareDrives(g, tomtom([26, 37], [18, 20]), 22.6, { nightMinutes: 40 }).congestionAgree, 1);
   assert.equal(compareDrives(null, tomtom([1], [1]), 1).outcome, 'no-data');
 });
 
@@ -56,18 +60,20 @@ test('schedule hours, IST month, the store, the monthly count and the plain-lang
   assert.equal(istMonth(Date.parse('2026-09-30T19:00:00Z')), '2026-10', 'after IST midnight it is October');
   const db = new DatabaseSync(':memory:');
   const store = createCrossCheckStore(db);
-  store.record('omr-south', '2026-10-01T12:30:00.000Z', '2026-10-01T12:29:00.000Z', { outcome: 'within10', congestionAgree: 1, legsWithin20: 6, legs: 6 });
-  store.record('omr-south', '2026-10-01T13:30:00.000Z', '2026-10-01T13:29:00.000Z', { outcome: 'tomtom-higher', congestionAgree: 1, legsWithin20: 3, legs: 6 });
+  store.record('omr-south', '2026-10-01T12:30:00.000Z', '2026-10-01T12:29:00.000Z', { outcome: 'within10', congestionAgree: 1, congestionRule: 2, legsWithin20: 6, legs: 6 });
+  store.record('omr-south', '2026-10-01T13:30:00.000Z', '2026-10-01T13:29:00.000Z', { outcome: 'tomtom-higher', congestionAgree: 1, congestionRule: 2, legsWithin20: 3, legs: 6 });
+  store.record('omr-south', '2026-10-01T11:30:00.000Z', '2026-10-01T11:29:00.000Z', { outcome: 'within10', congestionAgree: 0, legsWithin20: 6, legs: 6 }); // first rule: excluded from congestion
   store.record('omr-south', '2026-10-01T14:30:00.000Z', null, { outcome: 'error', error: 'HTTP 500' });
   const cols = db.prepare('PRAGMA table_info(crosscheck)').all().map((c) => c.name);
-  assert.deepEqual(cols, ['corridor_id', 'ts', 'tomtom_ts', 'outcome', 'congestion_agree', 'legs_within20', 'legs', 'error'], 'no column can hold a Google duration or distance');
-  assert.equal(store.callsInMonth('2026-10'), 3);
+  assert.deepEqual(cols, ['corridor_id', 'ts', 'tomtom_ts', 'outcome', 'congestion_agree', 'legs_within20', 'legs', 'error', 'congestion_rule'], 'no column can hold a Google duration or distance');
+  assert.equal(store.callsInMonth('2026-10'), 4);
   assert.equal(store.onlyErrorsAt('2026-10-01T14:30:00.000Z'), true);
   assert.equal(store.onlyErrorsAt('2026-10-01T12:30:00.000Z'), false);
   assert.equal(store.callsInMonth('2026-09'), 0);
   const [row] = store.summary('2026-10-01T00:00:00Z');
-  assert.equal(row.compared, 2);
+  assert.equal(row.compared, 3);
   assert.equal(row.errors, 1);
-  assert.equal(agreementText(row), 'within 10% of Google in 50% and within 20% in 50% of 2 checks; both sources agreed on whether the road was congested 100% of the time; stretch by stretch, 75% within 20%');
+  assert.equal(row.congestion_known, 2, 'the first-rule row is left out');
+  assert.equal(agreementText(row), 'within 10% of Google in 67% and within 20% in 67% of 3 checks; both put the road in the same state (heavy or not) 100% of the time; stretch by stretch, 83% within 20%');
   assert.equal(agreementText(null), 'no comparisons yet');
 });
