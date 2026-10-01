@@ -148,3 +148,50 @@ export function hotspots(incidents, { limit = 12, minScore = 3 } = {}) {
       latest: c.latest,
     }));
 }
+
+/**
+ * Recurring jams: places where TomTom reports a major jam (magnitude 3–4 or
+ * at least five minutes of delay) on several different days. Ranked by
+ * days seen, then by typical delay. This is what the incident feed can
+ * honestly show for Chennai today; it reports almost no accidents.
+ */
+export function recurringJams(incidents, { limit = 12, minDays = 2 } = {}) {
+  const cells = new Map();
+  for (const i of incidents) {
+    if (i.category !== 'jam' || i.lat == null) continue;
+    const delay = Math.max(i.max_delay_s || 0, i.delay_s || 0);
+    if ((i.magnitude ?? 0) < 3 && delay < 300) continue;
+    const key = `${Math.round(i.lat / CELL_DEG)}:${Math.round(i.lon / CELL_DEG)}`;
+    const c = cells.get(key) || { lat: 0, lon: 0, n: 0, days: new Set(), delays: [], names: new Map(), latest: null };
+    c.n++;
+    c.lat += i.lat;
+    c.lon += i.lon;
+    for (let t = Date.parse(i.first_seen), end = Date.parse(i.last_seen || i.first_seen); t <= end; t += 86_400_000)
+      c.days.add(new Date(t + 330 * 60_000).toISOString().slice(0, 10));
+    c.days.add(new Date(Date.parse(i.last_seen || i.first_seen) + 330 * 60_000).toISOString().slice(0, 10));
+    if (delay) c.delays.push(delay);
+    const name = [i.from_name, i.to_name].filter(Boolean).join(' → ') || i.road || null;
+    if (name) c.names.set(name, (c.names.get(name) || 0) + 1);
+    if (!c.latest || (i.last_seen || '') > c.latest) c.latest = i.last_seen;
+    cells.set(key, c);
+  }
+  const med = (xs) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.floor(s.length / 2)] : null; };
+  return [...cells.values()]
+    .filter((c) => c.days.size >= minDays)
+    .map((c) => ({
+      lat: Number((c.lat / c.n).toFixed(5)),
+      lon: Number((c.lon / c.n).toFixed(5)),
+      days: c.days.size,
+      reports: c.n,
+      typicalDelayMinutes: c.delays.length ? Math.round(med(c.delays) / 60) : null,
+      place: [...c.names.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null,
+      latest: c.latest,
+    }))
+    .sort((a, b) => b.days - a.days || (b.typicalDelayMinutes || 0) - (a.typicalDelayMinutes || 0))
+    .slice(0, limit);
+}
+
+/** Safety spots: accidents, flooding, breakdowns and dangerous conditions only. */
+export function safetySpots(incidents, opts = {}) {
+  return hotspots(incidents.filter((i) => i.category !== 'jam'), { minScore: 2, ...opts });
+}

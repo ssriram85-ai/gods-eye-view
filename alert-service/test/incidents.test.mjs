@@ -4,7 +4,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { normalizeIncident, fetchIncidents, createIncidentStore, hotspots } from '../src/incidents.mjs';
+import { normalizeIncident, fetchIncidents, createIncidentStore, hotspots, recurringJams } from '../src/incidents.mjs';
 import { renderSummary, touchesTamilNadu, inTamilNadu } from '../src/summary.mjs';
 
 const raw = (id, icon, lon, lat, extra = {}) => ({
@@ -67,24 +67,54 @@ test('Tamil Nadu filter and the public page render from stored data', () => {
   assert.equal(touchesTamilNadu(storm), true);
   const corridor = { id: 'omr-south', name: 'OMR southbound · Madhya Kailash → Siruseri', lengthKm: 22.1, definition: { road: 'omr', sections: [] } };
   const html = renderSummary({
-    roads: [{ corridor, status: { ts: '2026-09-29T12:30:00Z', minutes: 61, freeMinutes: 38, usualMinutes: 52, usualSource: 'recorded', vsUsual: 9, level: 'heavy', slowest: { section: 'Perungudi → Thoraipakkam', extraMinutes: 8 }, jams: 2 }, tips: [{ kind: 'depart', text: 'In the evening, leaving at 16:30 instead of 18:30 saves about 14 min.' }] }],
+    updatedAt: '2026-09-29T12:30:00.000Z', // 18:00 IST: evening advice
+    roads: [{ corridor, days: { weekdays: 3 }, confidence: { level: 'early' }, source: { kind: 'observed' }, notes: ['Its evening peak comes an hour before the northbound direction\'s.'],
+      status: { ts: '2026-09-29T12:30:00Z', minutes: 61, nightMinutes: 36, usualMinutes: 52, usualRange: [48, 58], usualSource: 'recorded', vsUsual: 9, unusual: true, level: 'heavy', slowest: { section: 'Perungudi → Thoraipakkam', extraMinutes: 8 }, jams: 2, closures: 0 },
+      tips: [
+        { kind: 'rush', period: 'morning', text: 'Morning rush: builds from 07:30.' },
+        { kind: 'rush', period: 'evening', text: 'Evening rush: builds from 16:30, worst at 18:30.' },
+        { kind: 'shift', period: 'evening', text: 'Leaving at 19:30 instead of 18:30 saves about 10 min (51 vs 61).' },
+      ] }],
     events: [sachetTN, sachetDelhi, storm,
       { source: 'heat', severity: 'critical', headline: 'Madurai: feels like 42°', value: { peakC: 43 }, geometry: { type: 'point', lat: 9.93, lon: 78.12 } },
       { source: 'heat', severity: 'critical', headline: 'Bengaluru: feels like 42°', value: { peakC: 42 }, geometry: { type: 'point', lat: 12.97, lon: 77.59 } },
       { source: 'heat', severity: 'warning', headline: 'Salem: feels like 38°', value: { peakC: 38 }, geometry: { type: 'point', lat: 11.66, lon: 78.15 } }],
-    incidentsNow: [{ category: 'accident', from_name: 'Tidel Park', to_name: 'Perungudi', lat: 12.98, lon: 80.248, delay_s: 600 }],
-    hotspots: [{ place: 'Sholinganallur → Karapakkam', reports: 3, days: 2, kinds: { accident: 1, jam: 2 }, lat: 12.9, lon: 80.23 }],
+    incidentsNow: [{ category: 'jam', from_name: 'Tidel Park', to_name: 'Perungudi', lat: 12.98, lon: 80.248, delay_s: 600 }],
+    recurring: [{ place: 'Sholinganallur → Karapakkam', days: 3, typicalDelayMinutes: 7, lat: 12.9, lon: 80.23 }],
+    safety: [],
+    incidentsSince: '2026-09-29T06:09:33.826Z',
   });
   assert.match(html, /61<small> min now/);
-  assert.match(html, /\+9 vs usual/);
-  assert.match(html, /Slowest now: Perungudi → Thoraipakkam \(\+8 min\)/);
-  assert.match(html, /leaving at 16:30 instead of 18:30/);
+  assert.match(html, /typical now 52 \(48–58 most days\) · <b>\+9 min vs typical<\/b>/);
+  assert.match(html, /night-time drive 36 min/);
+  assert.match(html, />Unusual</);
+  assert.match(html, /Slowest now: Perungudi → Thoraipakkam \(\+8 min on its night-time pace\)/);
+  assert.match(html, /<b>Next: evening\.<\/b> Evening rush: builds from 16:30, worst at 18:30\. Leaving at 19:30 instead of 18:30 saves about 10 min/);
+  assert.match(html, /an hour before the northbound direction/);
+  assert.doesNotMatch(html, /Morning rush: builds from 07:30/, 'only the next commute is shown on the card');
+  assert.match(html, /Live observation · early \(3 weekdays\)/);
+  assert.match(html, /Recurring jams, last 30 days/);
+  assert.match(html, /<td>Sholinganallur → Karapakkam<\/td><td>3<\/td><td>7 min<\/td>/);
+  assert.match(html, /TomTom has reported no accidents, breakdowns or flooding in Chennai since 2026-09-29/);
+  assert.match(html, /href="\/methodology"/);
   assert.match(html, /Heavy rain in Chennai/);
   assert.doesNotMatch(html, />Delhi</);
   assert.match(html, /Cyclone near Chennai/);
   assert.match(html, /Tidel Park → Perungudi/);
-  assert.match(html, /Sholinganallur → Karapakkam/);
-  assert.match(html, /not official accident records/);
+  assert.match(html, /not official records/);
   assert.match(html, /Feels like 41° or more today in Madurai 43°/);
   assert.doesNotMatch(html, /Bengaluru|Salem/);
+});
+
+test('recurring jams count distinct days and rank by days, then delay', () => {
+  const jam = (id, lon, first, last, delay) => ({ id, category: 'jam', magnitude: 3, delay_s: delay, max_delay_s: delay, lat: 13.0, lon, from_name: `P${lon}`, first_seen: first, last_seen: last });
+  const list = recurringJams([
+    jam('a', 80.2, '2026-09-29T12:00:00Z', '2026-09-29T13:00:00Z', 300),
+    jam('b', 80.2, '2026-09-30T12:00:00Z', '2026-09-30T12:15:00Z', 900),
+    jam('c', 80.3, '2026-09-28T12:00:00Z', '2026-09-30T12:00:00Z', 240), // one long-lived report spanning three days
+    jam('d', 80.4, '2026-09-30T12:00:00Z', '2026-09-30T12:30:00Z', 1200), // one day only: not recurring
+    { ...jam('e', 80.5, '2026-09-28T12:00:00Z', '2026-09-30T12:00:00Z', 60), magnitude: 1 }, // minor: ignored
+  ]);
+  assert.deepEqual(list.map((h) => [h.place, h.days]), [['P80.3', 3], ['P80.2', 2]]);
+  assert.equal(list[1].typicalDelayMinutes, 15);
 });

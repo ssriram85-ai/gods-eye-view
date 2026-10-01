@@ -90,6 +90,12 @@ services:
         value: "15"
       - key: INCIDENT_MINUTES
         value: "15"
+      # Hourly rainfall per road from Open-Meteo (no key).
+      - key: RAIN_MINUTES
+        value: "60"
+      # Leave unset until TomTom confirms its storage and sharing terms:
+      # RAW_RETENTION_DAYS (delete raw readings after N days, roll-ups kept)
+      # and EXPORT_PUBLIC=1 (open /export/slots.csv without the admin token).
       - key: SMTP_HOST
         sync: false
       - key: SMTP_PORT

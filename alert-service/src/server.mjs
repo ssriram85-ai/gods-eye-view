@@ -5,13 +5,16 @@ import { createHash } from 'node:crypto';
 import { createService } from './service.mjs';
 import { createCorridorStore, profile, compareProfiles } from './corridor.mjs';
 import { corridorDefinitions, resolveSections, sampleSections, createTravelStore } from './travel.mjs';
-import { travelProfile, commuterTips, liveStatus } from './insights.mjs';
-import { fetchIncidents, createIncidentStore, hotspots, CHENNAI_BBOX } from './incidents.mjs';
+import { travelProfile, commuterTips, liveStatus, crossRoadNotes, daysCovered, confidenceOf, sourceOf } from './insights.mjs';
+import { fetchIncidents, createIncidentStore, recurringJams, safetySpots, CHENNAI_BBOX } from './incidents.mjs';
+import { fetchRain, createWeatherStore, RAIN_POINTS } from './weather.mjs';
+import { createRollupStore, daysToRoll, rollupCsv } from './rollup.mjs';
+import { renderMethodology } from './methodology.mjs';
 import { renderReport } from './report.mjs';
 import { renderSummary } from './summary.mjs';
 import { createGeocoder } from './geocode.mjs';
 import { createStore } from './store.mjs';
-import { lastCompletedWeek, weekBounds, summarizeWeek, summarizeCity, renderWeeklyHtml, renderWeeklyText } from './weekly.mjs';
+import { lastCompletedWeek, weekBounds, summarizeWeek, summarizeCity, addCrossRoadNotes, renderWeeklyHtml, renderWeeklyText } from './weekly.mjs';
 import { sendMail } from './mail.mjs';
 
 const PORT = Number(process.env.PORT || 4180);
@@ -60,6 +63,12 @@ const REPORT_BASE_URL = (process.env.REPORT_BASE_URL || '').replace(/\/$/, '');
 const REPORT_DAY = Number(process.env.REPORT_DAY ?? 1);
 const REPORT_HOUR = Number(process.env.REPORT_HOUR ?? 7);
 const DAY = 86_400_000;
+// TomTom's terms limit how long downloaded traffic content may be kept. 0 keeps raw readings;
+// a positive number deletes raw readings older than that many days once they are rolled up.
+const RAW_RETENTION_DAYS = Number(process.env.RAW_RETENTION_DAYS || 0);
+// The slot export stays behind the admin token until TomTom confirms sharing derived data.
+const EXPORT_PUBLIC = /^(1|true|yes)$/i.test(String(process.env.EXPORT_PUBLIC || ''));
+const RAIN_MINUTES = Number(process.env.RAIN_MINUTES ?? 60);
 
 const service = createService({ baseUrl: BASE_URL, dataDir: DATA_DIR, gateToken: GEV_GATE_PASSWORD });
 const corridors = createCorridorStore(join(DATA_DIR, 'corridors.db'));
@@ -67,7 +76,9 @@ const travel = createTravelStore(corridors.db);
 const incidents = createIncidentStore(corridors.db);
 const geocoder = createGeocoder({ key: TOMTOM_KEY, store: createStore(DATA_DIR) });
 const weeklyStore = createStore(join(DATA_DIR, 'weekly'));
-const status = { corridors: null, incidents: null };
+const weather = createWeatherStore(corridors.db);
+const rollups = createRollupStore(corridors.db);
+const status = { corridors: null, incidents: null, rain: null, rollup: null };
 
 /** Context on the OMR record, added once. */
 const SEED_NOTES = [
@@ -75,9 +86,17 @@ const SEED_NOTES = [
   { corridors: ['omr-south', 'omr-north'], at: '2026-09-24T06:30:00.000Z', text: 'Trial reverted by midday' },
   { corridors: ['omr-south', 'omr-north'], at: '2026-09-24T07:56:00.000Z', text: 'Recording starts (after the reversal)' },
   { corridors: ['omr-south', 'omr-north'], at: '2026-09-29T08:00:00.000Z', text: 'Switched to section travel times' },
+  // Tamil Nadu public holidays (state list, 2026), on every road.
+  { corridors: null, at: '2026-10-01T18:30:00.000Z', text: 'Public holiday: Gandhi Jayanti' },
+  { corridors: null, at: '2026-10-18T18:30:00.000Z', text: 'Public holiday: Ayudha Pooja' },
+  { corridors: null, at: '2026-10-19T18:30:00.000Z', text: 'Public holiday: Vijayadasami' },
+  { corridors: null, at: '2026-11-07T18:30:00.000Z', text: 'Deepavali (Sunday)' },
+  { corridors: null, at: '2026-12-24T18:30:00.000Z', text: 'Public holiday: Christmas' },
 ];
 function seedNotes() {
-  for (const n of SEED_NOTES)
+  const global = corridors.db.prepare('SELECT text FROM notes WHERE corridor_id IS NULL').all().map((r) => r.text);
+  for (const n of SEED_NOTES.filter((x) => !x.corridors)) if (!global.includes(n.text)) corridors.addNote(null, n.at, n.text);
+  for (const n of SEED_NOTES.filter((x) => x.corridors))
     for (const id of n.corridors) {
       if (!corridors.getCorridor(id)) continue;
       if (corridors.listNotes(id).some((x) => x.text === n.text)) continue;
@@ -132,29 +151,66 @@ async function pollIncidents() {
   return status.incidents;
 }
 
+async function pollRain() {
+  try {
+    const rows = await fetchRain({ pastDays: 3 });
+    status.rain = { at: new Date().toISOString(), ok: true, hours: weather.record(rows) };
+  } catch (error) {
+    status.rain = { at: new Date().toISOString(), ok: false, error: error.message };
+    console.error('[rain] poll failed:', error.message);
+  }
+}
+
+/** Roll finished IST days up into daily slot summaries; then apply raw retention, if set. */
+function rollUp() {
+  let slots = 0, days = 0;
+  for (const corridor of sectionedCorridors()) {
+    const first = corridors.db.prepare('SELECT MIN(ts) AS ts FROM route_samples WHERE corridor_id = ?').get(corridor.id)?.ts;
+    const point = corridor.definition?.road && RAIN_POINTS[corridor.definition.road] ? corridor.definition.road : null;
+    for (const day of daysToRoll({ firstTs: first, rolled: new Set(rollups.days(corridor.id)) })) {
+      const bounds = { start: new Date(Date.parse(`${day}T00:00:00+05:30`)).toISOString(), end: new Date(Date.parse(`${day}T00:00:00+05:30`) + DAY).toISOString() };
+      slots += rollups.rollDay({ corridor, day, travel, rain: point ? weather.series(point, bounds.start, bounds.end) : null });
+      days++;
+    }
+  }
+  const purge = rollups.purgeRaw(RAW_RETENTION_DAYS, sectionedCorridors().map((c) => c.id));
+  status.rollup = { at: new Date().toISOString(), days, slots, purged: purge.deleted };
+  return status.rollup;
+}
+
 // ---- road insight helpers ----
 const sectionedCorridors = () => corridors.listCorridors().filter(isSectioned);
 function roadInsight(c) {
   const now = Date.now();
+  const sections = c.definition.sections.length;
   const rows = travel.rows(c.id, new Date(now - 28 * DAY).toISOString(), new Date(now + 60_000).toISOString());
-  const prof = travelProfile(rows, { sections: c.definition.sections.length });
+  const prof = travelProfile(rows, { sections });
   const latest = travel.latest(c.id);
-  return { corridor: c, profile: prof, latest, status: liveStatus(c, latest, prof), ...commuterTips(c, prof) };
+  const advice = commuterTips(c, prof);
+  const days = daysCovered(rows);
+  return { corridor: c, profile: prof, latest, ...advice, days, confidence: confidenceOf(days.weekdays), source: sourceOf(rows, sections), status: liveStatus(c, latest, prof, advice.baseline), since: corridors.db.prepare('SELECT MIN(ts) AS ts FROM route_samples WHERE corridor_id = ?').get(c.id)?.ts };
+}
+/** Every sectioned road's insight, in the built-in order, with cross-road notes attached. */
+function allInsights() {
+  const order = corridorDefinitions().map((d) => d.id);
+  const list = sectionedCorridors().sort((a, b) => (order.indexOf(a.id) + 1 || 99) - (order.indexOf(b.id) + 1 || 99)).map(roadInsight);
+  const notes = crossRoadNotes(list);
+  for (const r of list) r.notes = notes.get(r.corridor.id) || [];
+  return list;
 }
 let summaryCache = { at: 0, html: '' };
 function summaryHtml() {
   if (Date.now() - summaryCache.at < 60_000 && summaryCache.html) return summaryCache.html;
-  const order = corridorDefinitions().map((d) => d.id);
-  const roads = sectionedCorridors()
-    .sort((a, b) => (order.indexOf(a.id) + 1 || 99) - (order.indexOf(b.id) + 1 || 99))
-    .map(roadInsight);
+  const roads = allInsights();
   const since30 = new Date(Date.now() - 30 * DAY).toISOString();
+  const last30 = incidents.since(since30);
   const week = weekBounds(lastCompletedWeek(Date.now() + 7 * DAY).key); // the current week
   const html = renderSummary({
     roads,
     events: service.rawEvents(),
     incidentsNow: incidents.current(),
-    hotspots: hotspots(incidents.since(since30), { limit: 10 }),
+    recurring: recurringJams(last30, { limit: 10 }),
+    safety: safetySpots(last30, { limit: 10 }),
     weekCounts: week ? incidents.counts(week.start) : [],
     incidentsSince: incidents.firstSeen(),
     feedsOk: Object.values(service.feedStatus() || {}).every((f) => f.ok),
@@ -168,9 +224,10 @@ function weeklyReport(week) {
   const list = sectionedCorridors();
   const order = corridorDefinitions().map((d) => d.id);
   list.sort((a, b) => (order.indexOf(a.id) + 1 || 99) - (order.indexOf(b.id) + 1 || 99));
-  const summaries = list.map((corridor) => summarizeWeek({ travel, corridor, week }));
+  const rainFor = (c) => (RAIN_POINTS[c.definition?.road] ? weather.series(c.definition.road, new Date(Date.parse(week.start) - 28 * DAY).toISOString(), week.end) : null);
+  const summaries = addCrossRoadNotes(list.map((corridor) => summarizeWeek({ travel, corridor, week, rain: rainFor(corridor) })));
   const city = summarizeCity({ incidents, week });
-  const notes = [...new Map(list.flatMap((c) => corridors.listNotes(c.id)).filter((n) => n.at >= week.start && n.at < week.end).map((n) => [n.text, n])).values()];
+  const notes = [...new Map(list.flatMap((c) => corridors.listNotes(c.id)).filter((n) => n.at >= week.start && n.at < week.end).sort((a, b) => a.at.localeCompare(b.at)).map((n) => [n.text, n])).values()];
   weeklyStore.write(week.key, { week, generatedAt: new Date().toISOString(), summaries, city });
   return { summaries, city, notes };
 }
@@ -319,7 +376,7 @@ async function readJson(req) {
 // open (they are meant to be shared and cost no quota); everything that
 // registers, deletes, samples, polls or sends needs the token.
 // /mail/check and /weekly/send are admin-only (not in PUBLIC_READ).
-const PUBLIC_READ = /^\/(|summary|health|incidents|weekly(\/\d{4}-W\d{2}(\.json)?)?|corridors(\/[a-z0-9-]+(\/(report|latest|series|compare|travel|tips))?)?)$/;
+const PUBLIC_READ = /^\/(|summary|methodology|health|incidents|weekly(\/\d{4}-W\d{2}(\.json)?)?|corridors(\/[a-z0-9-]+(\/(report|latest|series|compare|travel|tips))?)?)$/;
 const authorized = (req) =>
   !ADMIN_TOKEN ||
   req.headers.authorization === `Bearer ${ADMIN_TOKEN}` ||
@@ -329,12 +386,13 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   try {
     if (req.method === 'GET' && url.pathname === '/health')
-      return json(res, 200, { ...service.health(), corridors: { every_minutes: CORRIDOR_MINUTES, count: sectionedCorridors().length, last: status.corridors }, incidents: { every_minutes: INCIDENT_MINUTES, last: status.incidents }, mail: mailHealth() });
+      return json(res, 200, { ...service.health(), corridors: { every_minutes: CORRIDOR_MINUTES, count: sectionedCorridors().length, last: status.corridors }, incidents: { every_minutes: INCIDENT_MINUTES, last: status.incidents }, rain: status.rain, rollup: status.rollup, retentionDays: RAW_RETENTION_DAYS, mail: mailHealth() });
     if (!authorized(req)) return json(res, 401, { error: 'unauthorized' });
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/summary')) return html(res, summaryHtml(), 'public, max-age=60');
     if (req.method === 'GET' && url.pathname === '/incidents') {
       const days = Math.max(1, Math.min(90, Number(url.searchParams.get('days')) || 30));
-      return json(res, 200, { current: incidents.current(), hotspots: hotspots(incidents.since(new Date(Date.now() - days * DAY).toISOString()), { limit: 25 }), since: incidents.firstSeen(), last: status.incidents });
+      const recent = incidents.since(new Date(Date.now() - days * DAY).toISOString());
+      return json(res, 200, { current: incidents.current(), recurringJams: recurringJams(recent, { limit: 25 }), safetySpots: safetySpots(recent, { limit: 25 }), since: incidents.firstSeen(), last: status.incidents });
     }
     if (req.method === 'GET' && url.pathname === '/assets') return json(res, 200, { assets: service.listAssets() });
     if (req.method === 'POST' && url.pathname === '/assets') {
@@ -365,6 +423,26 @@ const server = createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/poll') return json(res, 200, await service.poll());
     if (req.method === 'POST' && url.pathname === '/incidents/poll') return json(res, 200, await pollIncidents());
 
+    if (req.method === 'GET' && url.pathname === '/methodology') {
+      const roads = allInsights();
+      return html(res, renderMethodology({
+        roads,
+        incidentCounts: incidents.counts('2000-01-01T00:00:00.000Z'),
+        incidentsSince: incidents.firstSeen(),
+        rainSince: corridors.db.prepare('SELECT MIN(hour) AS h FROM rain_hourly').get()?.h || null,
+        retentionDays: RAW_RETENTION_DAYS,
+        exportPublic: EXPORT_PUBLIC,
+        notes: corridors.db.prepare('SELECT * FROM notes ORDER BY at').all().filter((n, i, all) => all.findIndex((x) => x.text === n.text) === i),
+      }), 'public, max-age=300');
+    }
+    if (req.method === 'GET' && url.pathname === '/export/slots.csv') {
+      const from = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get('from') || '') ? url.searchParams.get('from') : '2000-01-01';
+      const to = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get('to') || '') ? url.searchParams.get('to') : '2999-12-31';
+      const byId = new Map(corridors.listCorridors().map((c) => [c.id, c]));
+      res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="chennai-roads-slots-${from}-${to}.csv"`, 'Cache-Control': 'no-store' });
+      return res.end(rollupCsv(rollups.rows(from, to, url.searchParams.get('corridor') || null), byId));
+    }
+    if (req.method === 'POST' && url.pathname === '/rollup') return json(res, 200, rollUp());
     // ---- mail check: log in to the mail server and stop, no email sent ----
     if (req.method === 'POST' && url.pathname === '/mail/check') {
       const settings = mailSettingsReport();
@@ -433,8 +511,8 @@ const server = createServer(async (req, res) => {
       if (sub === 'travel') return json(res, 200, { corridor: corridor.id, sections: corridor.definition?.sections || [], from, to, totals: travel.totals(corridor.id, from, to), latest: travel.latest(corridor.id) });
       if (sub === 'tips') {
         if (!isSectioned(corridor)) return json(res, 409, { error: 'corridor predates section sampling' });
-        const r = roadInsight(corridor);
-        return json(res, 200, { corridor: corridor.id, status: r.status, tips: r.tips, enoughData: r.enoughData, daysRecorded: r.daysRecorded, weekday: r.profile.weekday, weekend: r.profile.weekend });
+        const r = allInsights().find((x) => x.corridor.id === corridor.id) || roadInsight(corridor);
+        return json(res, 200, { corridor: corridor.id, status: r.status, tips: r.tips, notes: r.notes || [], rushes: r.rushes, baseline: r.baseline, source: r.source, confidence: r.confidence, days: r.days, enoughData: r.enoughData, daysRecorded: r.daysRecorded, weekday: r.profile.weekday, weekend: r.profile.weekend });
       }
       // Legacy point-speed series (recorded 24–29 Sep 2026 before section sampling).
       if (sub === 'series') return json(res, 200, { corridor: corridor.id, from, to, series: corridors.series(corridor.id, from, to) });
@@ -442,7 +520,8 @@ const server = createServer(async (req, res) => {
       const comparison = a && b ? compareProfiles(profile(corridors.series(corridor.id, a.from, a.to)), profile(corridors.series(corridor.id, b.from, b.to))) : null;
       if (sub === 'compare') return json(res, 200, { corridor: corridor.id, a, b, comparison });
       if (sub === 'report' || !sub) {
-        const insight = isSectioned(corridor) ? roadInsight(corridor) : null;
+        const insight = isSectioned(corridor) ? allInsights().find((x) => x.corridor.id === corridor.id) || roadInsight(corridor) : null;
+        const road = corridor.definition?.road;
         return html(res, renderReport({
           corridor,
           series: corridors.series(corridor.id, from, to),
@@ -450,7 +529,7 @@ const server = createServer(async (req, res) => {
           notes: corridors.listNotes(corridor.id),
           comparison,
           windows: { hours, a: a?.label, b: b?.label },
-          travel: insight && { totals: travel.totals(corridor.id, from, to), latest: insight.latest, status: insight.status, tips: insight.tips, profile: insight.profile, jams: travel.jams(corridor.id, from, to) },
+          travel: insight && { totals: travel.totals(corridor.id, from, to), latest: insight.latest, status: insight.status, tips: insight.tips, notes: insight.notes, profile: insight.profile, baseline: insight.baseline, source: insight.source, confidence: insight.confidence, jams: travel.jams(corridor.id, from, to), rain: RAIN_POINTS[road] ? weather.series(road, from, to) : null },
         }));
       }
     }
@@ -478,6 +557,13 @@ server.listen(PORT, HOST, () => {
       setInterval(pollIncidents, INCIDENT_MINUTES * 60_000).unref();
     } else console.log('[incidents] recording off (INCIDENT_MINUTES=0)');
   }
+  if (RAIN_MINUTES > 0) {
+    pollRain();
+    setInterval(pollRain, RAIN_MINUTES * 60_000).unref();
+  }
+  // Roll up finished days shortly after start and then hourly (cheap: only missing days and yesterday).
+  setTimeout(() => { try { console.log('[rollup]', JSON.stringify(rollUp())); } catch (e) { console.error('[rollup] failed:', e.message); } }, 120_000).unref();
+  setInterval(() => { try { rollUp(); } catch (e) { console.error('[rollup] failed:', e.message); } }, 60 * 60_000).unref();
   const mail = mailHealth();
   console.log(`[weekly] report at /weekly · ${mail.configured ? `emailed to ${REPORT_TO.length} recipient(s) via ${SMTP.host}:${SMTP.port}, ${mail.schedule}${mail.waitingForNewSettings ? ` · PAUSED after: ${mail.lastError}` : ''}` : 'email off (set SMTP_USER, SMTP_PASS, REPORT_TO)'}`);
   setInterval(weeklyTick, 60_000).unref();

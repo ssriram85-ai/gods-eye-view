@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { createCorridorStore } from '../src/corridor.mjs';
 import { createTravelStore } from '../src/travel.mjs';
 import { createIncidentStore, normalizeIncident } from '../src/incidents.mjs';
-import { isoWeekKey, weekBounds, lastCompletedWeek, previousWeek, summarizeWeek, summarizeCity, headline, renderWeeklyHtml, renderWeeklyText } from '../src/weekly.mjs';
+import { isoWeekKey, weekBounds, lastCompletedWeek, previousWeek, summarizeWeek, summarizeCity, addCrossRoadNotes, headline, renderWeeklyHtml, renderWeeklyText } from '../src/weekly.mjs';
 
 const DAY = 86_400_000;
 
@@ -42,54 +42,77 @@ function seeded() {
     const rows = [10, 12, 14].map((free, i) => ({ leg: i, lengthM: 6000, travelS: (free + extra[i]) * 60, noTrafficS: free * 60, historicS: free * 60, incidentsS: null, delayS: extra[i] * 60, detour: 0 }));
     travel.save(corridor.id, { ts: new Date(t).toISOString(), rows, jams: evening ? [{ leg: 1, category: 'jam', magnitude: 3, delayS: 600, startKm: 9, endKm: 10, lat: 12.94, lon: 80.237 }] : [] });
   }
-  const inc = (id, icon) => normalizeIncident({ geometry: { type: 'Point', coordinates: [80.2279, 12.901] }, properties: { id, iconCategory: icon, magnitudeOfDelay: 4, from: 'Sholinganallur', to: 'Karapakkam' } });
+  const inc = (id, icon) => normalizeIncident({ geometry: { type: 'Point', coordinates: [80.2279, 12.901] }, properties: { id, iconCategory: icon, magnitudeOfDelay: 4, delay: 420, from: 'Sholinganallur', to: 'Karapakkam' } });
   incidents.record([inc('a1', 1), inc('j1', 6)], '2026-09-23T13:00:00.000Z');
-  incidents.record([inc('a2', 1)], '2026-09-25T13:00:00.000Z');
+  incidents.record([inc('a2', 1), inc('j2', 6)], '2026-09-25T13:00:00.000Z');
   return { travel, incidents, corridor, week: weekBounds('2026-W39') };
 }
 
-test('a week is summarized by peak with the week before, tips and the jammed stretch', () => {
+/** Two wet hours on Wednesday evening of week 39 (17:30–19:30 IST). */
+const RAIN = new Map([['2026-09-23T12:00:00.000Z', 5], ['2026-09-23T13:00:00.000Z', 5], ['2026-09-23T14:00:00.000Z', 0]]);
+
+test('a week is summarized inside rush windows found from all days, against the week before', () => {
   const { travel, corridor, week } = seeded();
-  const s = summarizeWeek({ travel, corridor, week });
+  const s = summarizeWeek({ travel, corridor, week, rain: RAIN });
   assert.equal(s.samples, 7 * 48);
-  const eve = s.periods.find((p) => p.id === 'evening');
-  const morn = s.periods.find((p) => p.id === 'morning');
-  assert.equal(Math.round(eve.minutes), 36 + 14 + 2 - 0); // 36 free + 14 + 2
-  assert.equal(Math.round(eve.previousMinutes), 48);
-  assert.equal(Math.round(eve.changeMinutes), 4);
-  assert.equal(Math.round(eve.freeMinutes), 36);
-  assert.equal(eve.bottleneck.section, 'Perungudi → Sholinganallur');
-  assert.equal(Math.round(morn.minutes), 41);
+  assert.equal(s.confidence.level, 'established', '10 weekdays across the two weeks');
+  assert.equal(s.source.kind, 'observed');
+  assert.equal(Math.round(s.baselineMinutes), 36);
+  const eve = s.periods.find((p) => p.period === 'evening');
+  const morn = s.periods.find((p) => p.period === 'morning');
+  assert.equal(eve.window, '16:30–20:30');
+  assert.equal(Math.round(eve.typical), 52);
+  assert.equal(Math.round(eve.previousTypical), 48);
+  assert.equal(Math.round(eve.change), 4);
+  assert.equal(morn.window, '07:30–10:30');
+  assert.equal(Math.round(morn.typical), 41);
+  assert.equal(Math.round(morn.change), 0);
+  assert.ok(s.tips.some((t) => t.kind === 'shift' && t.period === 'evening' && /saves about 14 min/.test(t.text)), JSON.stringify(s.tips.map((t) => t.text)));
+  assert.ok(s.tips.some((t) => t.kind === 'bottleneck' && /Perungudi → Sholinganallur carries 86%/.test(t.text)));
+  assert.equal(s.rain.mm, 10);
+  assert.equal(s.rain.wetHours, 2);
+  assert.equal(s.rain.wetSamples, 4);
+  assert.equal(Math.round(s.rain.excessMinutes), 2);
   assert.equal(s.mostJammed.section, 'Perungudi → Sholinganallur');
-  assert.ok(s.tips.some((t) => t.kind === 'depart' && t.window === 'evening'), JSON.stringify(s.tips));
-  assert.match(headline(s), /evening peak averaged 52 min for 22 km \(36 min on an empty road\)/);
-  assert.match(headline(s), /\+4 min vs last week/);
+  assert.match(headline(s), /evening rush 16:30–20:30, worst around 16:30, typically 52 min \(52 min on a bad day\) for 22 km; 36 min at night; \+4 min on last week/);
 });
 
-test('city incidents and trouble spots, and the rendered email', () => {
+test('city incidents: recurring jams and safety spots, and the rendered email', () => {
   const { travel, incidents, corridor, week } = seeded();
-  const s = summarizeWeek({ travel, corridor, week });
+  const s = addCrossRoadNotes([summarizeWeek({ travel, corridor, week, rain: RAIN })])[0];
   const city = summarizeCity({ incidents, week });
   assert.equal(city.accidents, 2);
-  assert.equal(city.hotspots[0].place, 'Sholinganallur → Karapakkam');
+  assert.equal(city.recurring.length, 1);
+  assert.equal(city.recurring[0].days, 2);
+  assert.equal(city.recurring[0].typicalDelayMinutes, 7);
+  assert.equal(city.safety[0].kinds.accident, 2);
   const html = renderWeeklyHtml({ summaries: [s], city, notes: [{ at: '2026-09-24T02:30:00.000Z', text: 'U-turns closed' }], week, baseUrl: 'https://gev.example' });
   assert.match(html, /Chennai roads · week 2026-W39/);
-  assert.match(html, /OMR \(Rajiv Gandhi Salai\)/);
-  assert.match(html, /Evening peak/);
+  assert.match(html, /All roads have enough weekdays recorded for established findings/);
+  assert.match(html, />Findings</);
+  assert.match(html, /Live observation/);
+  assert.match(html, /Evening <span style="color:#888">16:30–20:30/);
   assert.match(html, /\+4 min/);
+  assert.match(html, /rain 10 mm, 2 wet hours, wet-hour drives \+2 min vs typical/);
   assert.match(html, /2 accident reports/);
+  assert.match(html, /Recurring jams, last 30 days/);
   assert.match(html, /google\.com\/maps\?q=12\.901,80\.2279/);
-  assert.match(html, /U-turns closed/);
+  assert.match(html, /2026-09-24 08:00: U-turns closed/);
+  assert.match(html, /gev\.example\/methodology/);
   assert.doesNotMatch(html, /<svg/);
   const text = renderWeeklyText({ summaries: [s], city, week, baseUrl: 'https://gev.example' });
-  assert.match(text, /Trouble spot: Sholinganallur → Karapakkam/);
-  assert.match(text, /Live page: https:\/\/gev\.example\//);
+  assert.match(text, /\[live observation; established\]/);
+  assert.match(text, /Recurring jam: Sholinganallur → Karapakkam \(2 days, typical delay 7 min\)/);
 });
 
-test('an empty week renders without failing', () => {
+test('an empty week, and early data labelled as early', () => {
   const { travel, corridor } = seeded();
-  const s = summarizeWeek({ travel, corridor, week: weekBounds('2026-W45') });
-  assert.equal(s.samples, 0);
-  assert.match(headline(s), /no readings this week/);
-  assert.match(renderWeeklyHtml({ summaries: [s], city: null, week: weekBounds('2026-W45') }), /Not enough days recorded/);
+  const empty = summarizeWeek({ travel, corridor, week: weekBounds('2026-W45') });
+  assert.equal(empty.samples, 0);
+  assert.match(headline(empty), /no readings this week/);
+  const first = summarizeWeek({ travel, corridor, week: weekBounds('2026-W38') });
+  assert.equal(first.confidence.level, 'provisional', 'five weekdays recorded by the end of the first week');
+  const html = renderWeeklyHtml({ summaries: [empty, first], city: null, week: weekBounds('2026-W38') });
+  assert.match(html, /Early observations, not for formal use \(provisional: 5 weekdays recorded/);
+  assert.match(html, /0 of 2 road directions have established findings/);
 });

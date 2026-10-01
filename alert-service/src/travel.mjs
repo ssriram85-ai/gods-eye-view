@@ -276,8 +276,8 @@ export function createTravelStore(db) {
   return {
     save(corridorId, { ts, rows, jams }) {
       db.prepare('DELETE FROM route_jams WHERE corridor_id = ? AND ts = ?').run(corridorId, ts);
-      for (const r of rows) insertRow.run(corridorId, ts, r.leg, r.lengthM, r.travelS, r.noTrafficS, r.historicS, r.incidentsS, r.delayS, r.detour ?? 0);
-      for (const j of jams || []) insertJam.run(corridorId, ts, j.leg, j.category, j.magnitude, j.delayS, j.startKm, j.endKm, j.lat, j.lon);
+      for (const r of rows) insertRow.run(corridorId, ts, r.leg, r.lengthM ?? null, r.travelS ?? null, r.noTrafficS ?? null, r.historicS ?? null, r.incidentsS ?? null, r.delayS ?? null, r.detour ?? 0);
+      for (const j of jams || []) insertJam.run(corridorId, ts, j.leg ?? null, j.category ?? null, j.magnitude ?? null, j.delayS ?? null, j.startKm ?? null, j.endKm ?? null, j.lat ?? null, j.lon ?? null);
       return { ts, sections: rows.length, jams: (jams || []).length };
     },
     /** Every section row between two ISO instants. */

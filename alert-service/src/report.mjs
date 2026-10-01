@@ -22,22 +22,48 @@ function lineChart(series, { width = 900, height = 220, key = 'speed_ratio', not
   return `<svg viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="speed ratio over time">${grid}<path d="${path}" fill="none" stroke="#52d4ff" stroke-width="2"/>${marks}${ticks}</svg>`;
 }
 
-/** Whole-corridor minutes over time, with the empty-road time as a dashed line. */
-function minutesChart(totals, { width = 900, height = 230, notes = [] } = {}) {
+/**
+ * Whole-corridor minutes over time: live (blue), TomTom's typical time for
+ * the same moment (grey dashes), our night-time drive (green line), and
+ * hours with rain shaded.
+ */
+function minutesChart(totals, { width = 900, height = 240, notes = [], baseline = null, rain = null } = {}) {
   const pts = totals.filter((r) => r.travel_s != null);
   if (pts.length < 2) return `<p class="muted">Not enough section readings yet for a chart.</p>`;
   const t0 = Date.parse(pts[0].ts), t1 = Date.parse(pts[pts.length - 1].ts) || t0 + 1;
-  const max = Math.max(...pts.map((r) => r.travel_s / 60)) * 1.1 || 1;
+  const max = Math.max(...pts.map((r) => Math.max(r.travel_s, r.historic_s || 0) / 60)) * 1.1 || 1;
+  const min = Math.max(0, Math.min(...pts.map((r) => r.travel_s / 60), baseline ?? Infinity) * 0.85);
   const x = (ts) => 44 + ((Date.parse(ts) - t0) / (t1 - t0 || 1)) * (width - 64);
-  const y = (v) => 10 + (1 - v / max) * (height - 40);
-  const line = (key) => pts.map((r, i) => `${i ? 'L' : 'M'}${x(r.ts).toFixed(1)},${y(r[key] / 60).toFixed(1)}`).join(' ');
-  const step = max > 60 ? 20 : 10;
-  const grid = Array.from({ length: Math.floor(max / step) }, (_, i) => (i + 1) * step).map((g) => `<line x1="44" x2="${width - 20}" y1="${y(g)}" y2="${y(g)}" stroke="#2a3340"/><text x="4" y="${y(g) + 4}" fill="#9aa" font-size="11">${g} min</text>`).join('');
+  const y = (v) => 10 + (1 - (v - min) / (max - min || 1)) * (height - 40);
+  const line = (key) => pts.filter((r) => r[key] != null).map((r, i) => `${i ? 'L' : 'M'}${x(r.ts).toFixed(1)},${y(r[key] / 60).toFixed(1)}`).join(' ');
+  const step = max - min > 40 ? 10 : 5;
+  const grid = [];
+  for (let g = Math.ceil(min / step) * step; g < max; g += step) grid.push(`<line x1="44" x2="${width - 20}" y1="${y(g)}" y2="${y(g)}" stroke="#2a3340"/><text x="4" y="${y(g) + 4}" fill="#9aa" font-size="11">${g} min</text>`);
+  const wet = [];
+  if (rain) for (const [hour, mm] of rain) {
+    const h = Date.parse(hour);
+    if (mm < 2.5 || h + 3_600_000 < t0 || h > t1) continue;
+    const xa = x(new Date(Math.max(h, t0)).toISOString()), xb = x(new Date(Math.min(h + 3_600_000, t1)).toISOString());
+    wet.push(`<rect x="${xa}" y="10" width="${Math.max(2, xb - xa)}" height="${height - 40}" fill="#3498db" opacity="${mm >= 7.5 ? 0.35 : 0.18}"><title>rain ${mm} mm</title></rect>`);
+  }
   const marks = notes.filter((n) => Date.parse(n.at) >= t0 && Date.parse(n.at) <= t1)
-    .map((n) => `<line x1="${x(n.at)}" x2="${x(n.at)}" y1="10" y2="${height - 30}" stroke="#ffb020" stroke-dasharray="4 3"/><text x="${x(n.at) + 3}" y="20" fill="#ffb020" font-size="11">${esc(n.text)}</text>`).join('');
+    .map((n, i) => `<line x1="${x(n.at)}" x2="${x(n.at)}" y1="10" y2="${height - 30}" stroke="#ffb020" stroke-dasharray="4 3"/><text x="${x(n.at) + 3}" y="${20 + (i % 3) * 12}" fill="#ffb020" font-size="11">${esc(n.text)}</text>`).join('');
   const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => { const ts = new Date(t0 + f * (t1 - t0)).toISOString(); return `<text x="${x(ts)}" y="${height - 12}" fill="#9aa" font-size="11" text-anchor="middle">${ist(ts)}</text>`; }).join('');
-  return `<svg viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="travel minutes over time">${grid}<path d="${line('no_traffic_s')}" fill="none" stroke="#7f8c8d" stroke-dasharray="5 4" stroke-width="1.5"/><path d="${line('travel_s')}" fill="none" stroke="#52d4ff" stroke-width="2"/>${marks}${ticks}</svg>
-<p class="muted">Blue: live travel time for the whole road. Grey dashes: TomTom's empty-road time for the same route.</p>`;
+  const base = baseline != null ? `<line x1="44" x2="${width - 20}" y1="${y(baseline)}" y2="${y(baseline)}" stroke="#2ecc71" stroke-width="1.2"/>` : '';
+  return `<svg viewBox="0 0 ${width} ${height}" width="100%" role="img" aria-label="travel minutes over time">${wet.join('')}${grid.join('')}${base}<path d="${line('historic_s')}" fill="none" stroke="#95a5a6" stroke-dasharray="5 4" stroke-width="1.5"/><path d="${line('travel_s')}" fill="none" stroke="#52d4ff" stroke-width="2"/>${marks}${ticks}</svg>
+<p class="muted">Blue: live drive for the whole road. Grey dashes: TomTom's typical time for the same moment; where blue sits on grey, the reading follows TomTom's history. Green: our night-time drive. Shaded: hours with at least 2.5 mm of rain.</p>`;
+}
+
+/** Typical weekday by departure slot: bars from the night-time drive, whiskers for the most-days range. */
+function profileBars(slots, baseline) {
+  if (!slots.length) return '';
+  const top = Math.max(...slots.map((p) => p.p90 ?? p.minutes)) * 1.05;
+  const floor = Math.max(0, (baseline ?? Math.min(...slots.map((p) => p.minutes))) - 2);
+  const h = (v) => Math.max(0, Math.min(100, ((v - floor) / (top - floor || 1)) * 100));
+  return `<div class="bars-wrap"><div class="axis"><span>${Math.round(top)} min</span><span>${Math.round(floor)} min</span></div><div class="bars">${slots
+    .map((p) => `<div title="${p.label}: typical ${Math.round(p.minutes)} min, most days ${Math.round(p.p10)}–${Math.round(p.p90)} (${p.days} day${p.days > 1 ? 's' : ''})"><i style="bottom:${h(p.p10)}%;height:${Math.max(1, h(p.p90) - h(p.p10))}%"></i><span style="height:${h(p.minutes)}%"></span><em>${p.slot % 180 === 0 ? p.label.slice(0, 2) : ''}</em></div>`)
+    .join('')}</div></div>
+<p class="muted">Each bar is a 30-minute departure slot on recorded weekdays: the bar is the typical drive, the thin line the range most days fall into. Bars start at the night-time drive, so their height is the extra time.</p>`;
 }
 
 const LEVEL_COLOR = { clear: '#2ecc71', busy: '#f1c40f', heavy: '#e67e22', jammed: '#e74c3c', unknown: '#7f8c8d' };
@@ -48,23 +74,24 @@ function travelSection(corridor, t, notes, hours) {
   const st = t.status;
   const rows = t.latest?.rows || [];
   const wk = (t.profile?.weekday || []).filter((p) => p.days >= 1);
-  const maxWk = Math.max(1, ...wk.map((p) => p.minutes));
-  return `<div class="grid">
-<div class="tile"><span class="muted">Now (${st ? ist(st.ts) : '—'})</span><b style="color:${LEVEL_COLOR[st?.level || 'unknown']}">${st ? Math.round(st.minutes) + ' min' : '—'}</b><span class="muted">${st?.level || ''}</span></div>
-<div class="tile"><span class="muted">Usual at this time</span><b>${st?.usualMinutes == null ? '—' : Math.round(st.usualMinutes) + ' min'}</b><span class="muted">${st?.usualSource === 'recorded' ? 'from our recordings' : "TomTom's history"}</span></div>
-<div class="tile"><span class="muted">Empty road</span><b>${st ? Math.round(st.freeMinutes) + ' min' : '—'}</b><span class="muted">still includes signals</span></div>
-<div class="tile"><span class="muted">Jams on the route now</span><b>${st?.jams ?? '—'}</b><span class="muted">${st?.detour ? 'live route left the road' : 'TomTom traffic sections'}</span></div>
+  const night = t.baseline;
+  const byPeriod = (period) => (t.tips || []).filter((x) => x.period === period);
+  return `<p class="labels"><span class="lab">${t.source?.kind === 'observed' ? 'Live observation' : "Mostly TomTom's typical pattern"}</span><span class="lab">${esc(t.confidence?.text || '')}</span></p>
+${t.source ? `<p class="muted">Source: ${esc(t.source.text)}.</p>` : ''}
+<div class="grid">
+<div class="tile"><span class="muted">Now (${st ? ist(st.ts) : '—'})</span><b style="color:${LEVEL_COLOR[st?.level || 'unknown']}">${st ? Math.round(st.minutes) + ' min' : '—'}</b><span class="muted">${st?.unusual ? 'UNUSUAL for this time' : st?.level || ''}</span></div>
+<div class="tile"><span class="muted">Typical at this time</span><b>${st?.usualMinutes == null ? '—' : Math.round(st.usualMinutes) + ' min'}</b><span class="muted">${st?.usualRange ? `${Math.round(st.usualRange[0])}–${Math.round(st.usualRange[1])} most days` : st?.usualSource === 'tomtom' ? "TomTom's history (too few days of ours)" : ''}</span></div>
+<div class="tile"><span class="muted">Night-time drive</span><b>${night ? Math.round(night.minutes) + ' min' : st ? Math.round(st.nightMinutes) + ' min' : '—'}</b><span class="muted">${night ? `typical at ${night.label}` : "TomTom's no-traffic time"}</span></div>
+<div class="tile"><span class="muted">On the route now</span><b>${st ? `${st.jams} jam${st.jams === 1 ? '' : 's'}` : '—'}</b><span class="muted">${st?.detour ? 'live route left the road' : st?.closures ? `${st.closures} closure(s)` : 'TomTom traffic sections'}</span></div>
 </div>
-${t.tips?.length ? `<h2>Advice</h2><ul>${t.tips.map((x) => `<li>${esc(x.text)}</li>`).join('')}</ul>` : `<p class="muted">Departure advice appears once two weekdays have been recorded.</p>`}
+${t.tips?.length ? ['morning', 'evening'].map((p) => byPeriod(p).length ? `<h2>${p === 'morning' ? 'Morning' : 'Evening'}</h2><ul>${byPeriod(p).map((x) => `<li>${esc(x.text)}</li>`).join('')}</ul>` : '').join('') + (t.notes?.length ? `<ul>${t.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : '') : `<p class="muted">Rush-hour findings appear once each half-hour has been recorded on two weekdays.</p>`}
 <h2>Stretch by stretch, latest</h2>
-<table><thead><tr><th>Stretch</th><th>Length</th><th>Now</th><th>Empty road</th><th>Extra</th></tr></thead><tbody>
-${sections.map((s, i) => { const r = rows.find((x) => x.leg === i); const extra = r ? (r.travel_s - r.no_traffic_s) / 60 : null; return `<tr class="${extra != null && extra >= 5 ? 'bad' : ''}"><td>${esc(s.from)} → ${esc(s.to)}</td><td>${s.lengthKm} km</td><td>${r ? mins(r.travel_s) : '—'}</td><td>${r ? mins(r.no_traffic_s) : '—'}</td><td>${extra == null ? '—' : `+${extra.toFixed(1)} min`}</td></tr>`; }).join('')}
+<table><thead><tr><th>Stretch</th><th>Length</th><th>Now</th><th>Night-time</th><th>Extra</th></tr></thead><tbody>
+${sections.map((s, i) => { const r = rows.find((x) => x.leg === i); const base = night?.sectionMinutes?.[i] ?? (r ? r.no_traffic_s / 60 : null); const extra = r && base != null ? r.travel_s / 60 - base : null; return `<tr class="${extra != null && extra >= 5 ? 'bad' : ''}"><td>${esc(s.from)} → ${esc(s.to)}</td><td>${s.lengthKm} km</td><td>${r ? mins(r.travel_s) : '—'}</td><td>${base != null ? `${base.toFixed(1)} min` : '—'}</td><td>${extra == null ? '—' : `${extra >= 0 ? '+' : ''}${extra.toFixed(1)} min`}</td></tr>`; }).join('')}
 </tbody></table>
 <h2>Whole road, last ${hours} hours</h2>
-${minutesChart(t.totals, { notes })}
-${wk.length ? `<h2>Typical weekday, by departure time</h2>
-<div class="bars">${wk.map((p) => `<div title="${p.label}: ${Math.round(p.minutes)} min (${p.days} day${p.days > 1 ? 's' : ''})"><span style="height:${Math.round((p.minutes / maxWk) * 100)}%"></span><em>${p.slot % 120 === 0 ? p.label.slice(0, 2) : ''}</em></div>`).join('')}</div>
-<p class="muted">Each bar is a 30-minute departure slot, averaged over the weekdays recorded so far.</p>` : ''}`;
+${minutesChart(t.totals, { notes, baseline: night?.minutes ?? null, rain: t.rain })}
+${wk.length ? `<h2>Typical weekday, by departure time</h2>${profileBars(wk, night?.minutes)}` : ''}`;
 }
 
 export function renderReport({ corridor, series, latest, notes, comparison, windows, tz = 'IST', travel = null }) {
@@ -83,7 +110,7 @@ export function renderReport({ corridor, series, latest, notes, comparison, wind
 h1{font-size:20px;margin:0 0 4px}h2{font-size:16px;margin:24px 0 8px}.muted{color:#9aa4b2}.headline{font-size:15px;color:#ffd93d}
 table{border-collapse:collapse;width:100%;font-size:13px}th,td{padding:5px 8px;border-bottom:1px solid #222b36;text-align:right}th:first-child,td:first-child{text-align:left}
 tr.bad td{color:#ff7a8a}tr.good td{color:#7fe6a5}code{background:#1a2230;padding:1px 4px;border-radius:3px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}.tile{background:#151b24;border-radius:8px;padding:10px}.tile b{display:block;font-size:20px}
-.pts{display:flex;gap:3px;margin:8px 0}a{color:#52d4ff}ul{padding-left:20px}li{margin:4px 0}.bars{display:flex;align-items:flex-end;gap:2px;height:140px;margin:8px 0 18px}.bars div{flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end;position:relative}.bars span{display:block;background:#52d4ff;border-radius:2px 2px 0 0}.bars em{position:absolute;bottom:-16px;left:0;font-size:10px;color:#9aa;font-style:normal}.pts span{flex:1;height:14px;border-radius:3px}
+.pts{display:flex;gap:3px;margin:8px 0}a{color:#52d4ff}ul{padding-left:20px}li{margin:4px 0}.bars-wrap{display:flex;gap:6px;margin:8px 0 22px}.axis{display:flex;flex-direction:column;justify-content:space-between;font-size:10px;color:#9aa;height:150px;white-space:nowrap}.bars{flex:1;display:flex;align-items:flex-end;gap:2px;height:150px}.bars div{flex:1;height:100%;position:relative}.bars span{position:absolute;bottom:0;left:0;right:0;background:#52d4ff;border-radius:2px 2px 0 0;opacity:.85}.bars i{position:absolute;left:45%;width:2px;background:#e6edf3;opacity:.7;z-index:1}.bars em{position:absolute;bottom:-16px;left:0;font-size:10px;color:#9aa;font-style:normal}.labels{margin:6px 0}.lab{display:inline-block;border:1px solid #2a3646;border-radius:99px;padding:1px 9px;margin-right:6px;font-size:12px;color:#c9d4e0}.pts span{flex:1;height:14px;border-radius:3px}
 </style></head><body>
 <h1>${esc(corridor.name)}</h1>
 <p class="muted">${corridor.lengthKm} km · ${travel ? `${(corridor.definition?.sections || []).length} stretches · TomTom live-traffic routing every 15 minutes` : `${corridor.points.length} sample points · TomTom flow`} · times in ${tz} · <a href="/">all roads</a></p>

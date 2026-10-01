@@ -5,6 +5,7 @@
  * number of visitors costs no API quota. No login, nothing private.
  */
 import { haversineKm, pointInRing } from './geo.mjs';
+import { nextCommute } from './insights.mjs';
 
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const m = (v) => (v == null ? '—' : `${Math.round(v)}`);
@@ -44,11 +45,11 @@ const LEVEL = {
 const ROAD_NAMES = { omr: 'OMR · Rajiv Gandhi Salai', 'anna-salai': 'Anna Salai · Mount Road', gst: 'GST Road', ecr: 'ECR · East Coast Road' };
 
 /**
- * roads: [{ corridor, status (liveStatus), tips }]
+ * roads: [{ corridor, status (liveStatus), tips, source, confidence, notes }]
  * events: normalized events (with geometry) from the last poll
- * incidentsNow, hotspots, counts: from the incident store
+ * incidentsNow, recurring, safety, weekCounts: from the incident store
  */
-export function renderSummary({ roads, events = [], incidentsNow = [], hotspots = [], weekCounts = [], incidentsSince = null, weeklyUrl = '/weekly', updatedAt = new Date().toISOString(), feedsOk = true }) {
+export function renderSummary({ roads, events = [], incidentsNow = [], recurring = [], safety = [], weekCounts = [], incidentsSince = null, weeklyUrl = '/weekly', updatedAt = new Date().toISOString(), feedsOk = true }) {
   const tnEvents = events.filter(touchesTamilNadu);
   const alerts = tnEvents.filter((e) => e.source === 'sachet');
   const storms = tnEvents.filter((e) => e.source === 'jtwc');
@@ -57,22 +58,27 @@ export function renderSummary({ roads, events = [], incidentsNow = [], hotspots 
   const flooding = incidentsNow.filter((i) => i.category === 'flooding');
   const bigJams = incidentsNow.filter((i) => i.category === 'jam' && (i.delay_s || 0) >= 300).slice(0, 8);
   const byCat = incidentsNow.reduce((a, i) => ((a[i.category] = (a[i.category] || 0) + 1), a), {});
+  const period = nextCommute(updatedAt);
 
   const roadIds = [...new Set(roads.map((r) => r.corridor.definition?.road))];
   const card = (r) => {
     const s = r.status;
     const [color, word] = LEVEL[s?.level || 'unknown'];
-    const vs = s?.vsUsual == null ? '' : Math.abs(s.vsUsual) < 2 ? 'about usual' : `${s.vsUsual > 0 ? '+' : '−'}${Math.round(Math.abs(s.vsUsual))} vs usual`;
-    const tip = r.tips.find((t) => t.kind === 'depart') || r.tips.find((t) => t.kind === 'bottleneck') || r.tips[0];
+    const vs = s?.vsUsual == null ? '' : Math.abs(s.vsUsual) < 2 ? 'about typical' : `${s.vsUsual > 0 ? '+' : '−'}${Math.round(Math.abs(s.vsUsual))} min vs typical`;
+    const rangeText = s?.usualRange ? ` (${m(s.usualRange[0])}–${m(s.usualRange[1])} most days)` : '';
+    const forPeriod = (r.tips || []).filter((t) => t.period === period);
+    const rush = forPeriod.find((t) => t.kind === 'rush' || t.kind === 'calm');
+    const shift = forPeriod.find((t) => t.kind === 'shift') || forPeriod.find((t) => t.kind === 'no-shift');
+    const conf = r.confidence;
     return `<div class="card">
-<div class="row"><span class="dir">${esc(r.corridor.name.split('·')[0].trim())}</span><span class="pill" style="background:${color}">${word}</span></div>
+<div class="row"><span class="dir">${esc(r.corridor.name.split('·')[0].trim())}</span><span>${s?.unusual ? '<span class="pill" style="background:#8e44ad">Unusual</span> ' : ''}<span class="pill" style="background:${color}">${word}</span></span></div>
 <div class="route">${esc((r.corridor.name.split('·')[1] || '').trim())} · ${r.corridor.lengthKm} km</div>
 <div class="big">${m(s?.minutes)}<small> min now</small></div>
-<div class="muted">${s ? `usual ${m(s.usualMinutes)} · empty road ${m(s.freeMinutes)}${vs ? ` · <b>${vs}</b>` : ''}` : 'no reading yet'}</div>
-${s?.slowest && s.slowest.extraMinutes >= 2 ? `<div class="muted">Slowest now: ${esc(s.slowest.section)} (+${Math.round(s.slowest.extraMinutes)} min)</div>` : ''}
-${s?.detour ? `<div class="warn">The live route left the road: likely a closure or diversion.</div>` : ''}
-${tip ? `<div class="tip">${esc(tip.text)}</div>` : '<div class="muted small">Departure advice appears after two weekdays of readings.</div>'}
-<a class="small" href="/corridors/${esc(r.corridor.id)}/report?hours=48">details</a>
+<div class="muted">${s ? `typical now ${m(s.usualMinutes)}${rangeText}${vs ? ` · <b>${vs}</b>` : ''}<br>night-time drive ${m(s.nightMinutes)} min` : 'no reading yet'}</div>
+${s?.slowest && s.slowest.extraMinutes >= 3 ? `<div class="muted">Slowest now: ${esc(s.slowest.section)} (+${Math.round(s.slowest.extraMinutes)} min on its night-time pace)</div>` : ''}
+${s?.detour ? '<div class="warn">The live route left the road: likely a closure or diversion.</div>' : s?.closures ? '<div class="warn">TomTom reports a closure on the route.</div>' : ''}
+${rush ? `<div class="tip"><b>${period === 'morning' ? 'Next: morning' : 'Next: evening'}.</b> ${esc(rush.text)}${shift ? ` ${esc(shift.text)}` : ''}${(r.notes || []).length ? ` ${esc(r.notes.join(' '))}` : ''}</div>` : `<div class="muted small">Rush-hour findings appear once each half-hour has been recorded on two weekdays.</div>`}
+<div class="meta">${r.source?.kind === 'observed' ? 'Live observation' : "Mostly TomTom's typical pattern"} · ${conf ? esc(conf.level) : ''} (${conf ? esc(String(r.days?.weekdays ?? '')) : ''} weekdays) · <a href="/corridors/${esc(r.corridor.id)}/report?hours=48">details</a></div>
 </div>`;
   };
 
@@ -88,14 +94,14 @@ main{max-width:1100px;margin:0 auto;padding:16px}h1{font-size:22px;margin:0}h2{f
 .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px}
 .row{display:flex;justify-content:space-between;align-items:center;gap:8px}.dir{font-weight:600}.route{color:var(--muted);font-size:13px;margin:2px 0 6px}
 .pill{color:#fff;font-size:12px;font-weight:600;padding:2px 8px;border-radius:99px}.big{font-size:28px;font-weight:700}.big small{font-size:13px;font-weight:400;color:var(--muted)}
-.tip{margin:8px 0 6px;padding:8px;border-radius:6px;background:rgba(26,95,180,.08);font-size:13px}.warn{color:#c0392b;font-size:13px;margin-top:4px}
+.tip{margin:8px 0 6px;padding:8px;border-radius:6px;background:rgba(26,95,180,.08);font-size:13px}.meta{font-size:12px;color:var(--muted);margin-top:4px}.warn{color:#c0392b;font-size:13px;margin-top:4px}
 table{border-collapse:collapse;width:100%;font-size:14px;background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
 th,td{padding:7px 9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:var(--muted);font-weight:600;font-size:13px}
 .sev-critical{color:#c0392b;font-weight:600}.sev-warning{color:#d35400;font-weight:600}.empty{padding:12px;background:var(--card);border:1px solid var(--line);border-radius:10px;color:var(--muted)}
 footer{margin:30px 0 10px;font-size:12px;color:var(--muted)}
 </style></head><body><main>
 <h1>Chennai roads today</h1>
-<p class="muted">Updated ${esc(ist(updatedAt))} IST · refreshes every 5 minutes · <a href="${esc(weeklyUrl)}">weekly report</a>${feedsOk ? '' : ' · <span class="warn">some hazard feeds are not answering</span>'}</p>
+<p class="muted">Updated ${esc(ist(updatedAt))} IST · refreshes every 5 minutes · <a href="${esc(weeklyUrl)}">weekly report</a> · <a href="/methodology">how these numbers are made</a>${feedsOk ? '' : ' · <span class="warn">some hazard feeds are not answering</span>'}</p>
 
 ${roadIds.map((id) => `<h3>${esc(ROAD_NAMES[id] || id)}</h3><div class="grid">${roads.filter((r) => r.corridor.definition?.road === id).map(card).join('')}</div>`).join('')}
 
@@ -112,13 +118,17 @@ ${accidents.length || flooding.length || bigJams.length ? `<table><tr><th>What</
 ${[...accidents, ...flooding, ...bigJams].map((i) => `<tr><td class="${i.category === 'accident' ? 'sev-critical' : i.category === 'flooding' ? 'sev-warning' : ''}">${esc(i.category)}${i.description ? `<div class="muted small">${esc(i.description)}</div>` : ''}</td><td>${esc([i.from_name, i.to_name].filter(Boolean).join(' → ') || i.road || '—')}</td><td>${i.delay_s ? `${Math.round(i.delay_s / 60)} min` : '—'}</td><td><a href="https://www.google.com/maps?q=${i.lat},${i.lon}">open</a></td></tr>`).join('')}
 </table>` : '<div class="empty">No accidents, flooding or major jams reported right now.</div>'}
 
-<h2>Trouble spots, last 30 days</h2>
-<p class="muted small">Places where accidents, breakdowns, flooding and major jams keep being reported. These are counts of live reports, not official accident records${incidentsSince ? `; recording since ${esc(incidentsSince.slice(0, 10))}` : ''}.</p>
-${hotspots.length ? `<table><tr><th>Place</th><th>Reports</th><th>Days</th><th>What</th><th>Map</th></tr>
-${hotspots.map((h) => `<tr><td>${esc(h.place || 'unnamed road')}</td><td>${h.reports}</td><td>${h.days}</td><td>${Object.entries(h.kinds).map(([k, n]) => `${n} ${esc(k)}`).join(', ')}</td><td><a href="https://www.google.com/maps?q=${h.lat},${h.lon}">open</a></td></tr>`).join('')}
-</table>` : '<div class="empty">Not enough reports yet. Trouble spots appear as days of incident data accumulate.</div>'}
+<h2>Recurring jams, last 30 days</h2>
+<p class="muted small">Places where TomTom reported a major jam on two or more different days, ranked by days seen. Counts of live reports, not official records${incidentsSince ? `; recording since ${esc(incidentsSince.slice(0, 10))}` : ''}.</p>
+${recurring.length ? `<table><tr><th>Place</th><th>Days seen</th><th>Typical delay</th><th>Map</th></tr>
+${recurring.map((h) => `<tr><td>${esc(h.place || 'unnamed road')}</td><td>${h.days}</td><td>${h.typicalDelayMinutes != null ? `${h.typicalDelayMinutes} min` : '—'}</td><td><a href="https://www.google.com/maps?q=${h.lat},${h.lon}">open</a></td></tr>`).join('')}
+</table>` : '<div class="empty">No jam has recurred on two different days yet.</div>'}
+<h2>Accidents and flooding</h2>
+${safety.length ? `<table><tr><th>Place</th><th>Reports</th><th>Days</th><th>What</th><th>Map</th></tr>
+${safety.map((h) => `<tr><td>${esc(h.place || 'unnamed road')}</td><td>${h.reports}</td><td>${h.days}</td><td>${Object.entries(h.kinds).map(([k, n]) => `${n} ${esc(k)}`).join(', ')}</td><td><a href="https://www.google.com/maps?q=${h.lat},${h.lon}">open</a></td></tr>`).join('')}
+</table>` : `<div class="empty">TomTom has reported no accidents, breakdowns or flooding in Chennai${incidentsSince ? ` since ${esc(incidentsSince.slice(0, 10))}` : ''}. Accident locations need official records; see <a href="/methodology">how these numbers are made</a>.</div>`}
 ${weekCounts.length ? `<p class="muted small">Reported this week: ${weekCounts.map((c) => `${c.n} ${esc(c.category)}`).join(', ')}.</p>` : ''}
 
-<footer>Road times: TomTom live-traffic routing along each road every 15 minutes, split at the named junctions; "usual" is the recorded average for this weekday or weekend time, or TomTom's history until two days are recorded; "empty road" still includes signals. Alerts: NDMA SACHET (Government of India), JTWC, Open-Meteo. Incidents: TomTom. Traffic data © TomTom. Built with God's Eye View.</footer>
+<footer>Road times: TomTom live-traffic routing along each road every 15 minutes, split at the named junctions. "Typical" is the median for this half-hour on recorded weekdays (or weekends), with the range most days fall into; "night-time drive" is the quickest typical time after midnight. Findings marked early or provisional rest on few days. <a href="/methodology">How these numbers are made</a>. Alerts: NDMA SACHET (Government of India), JTWC, Open-Meteo. Incidents: TomTom. Traffic data © TomTom. Built with God's Eye View.</footer>
 </main></body></html>`;
 }

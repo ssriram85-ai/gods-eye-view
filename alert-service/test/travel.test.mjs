@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { corridorDefinitions, resolveSections, sampleSections, createTravelStore, trimEndLoops, ROADS } from '../src/travel.mjs';
 import { createCorridorStore } from '../src/corridor.mjs';
-import { travelProfile, commuterTips, liveStatus, istSlot, dayType } from '../src/insights.mjs';
+import { travelProfile, commuterTips, liveStatus, istSlot, dayType, crossRoadNotes, confidenceOf, sourceOf, nextCommute, rushShapes, nightBaseline } from '../src/insights.mjs';
 
 // A straight road running south from 13.00 to 12.90 (about 11 km), 101 points.
 const ROAD = Array.from({ length: 101 }, (_, i) => ({ latitude: 13.0 - i * 0.001, longitude: 80.25 }));
@@ -96,36 +96,87 @@ function recorded() {
       const ts = new Date(Date.parse(`${day}T00:00:00+05:30`) + min * 60_000).toISOString();
       const h = min / 60;
       const evening = h >= 18 && h < 20, lateMorning = h >= 8.5 && h < 10;
-      const legs = [3, 4, 3].map((free, i) => ({ leg: i, lengthM: 3000, travelS: (free + (evening && i === 1 ? 12 : evening ? 2 : lateMorning ? 3 : 0)) * 60, noTrafficS: free * 60, historicS: free * 60, incidentsS: null, delayS: 0, detour: 0 }));
+      const legs = [3, 4, 3].map((free, i) => ({ leg: i, lengthM: 3000, travelS: (free + (evening && i === 1 ? 12 : evening ? 2 : lateMorning ? [1, 4, 1][i] : 0)) * 60, noTrafficS: free * 60, historicS: free * 60, incidentsS: null, delayS: 0, detour: 0 }));
       travel.save(corridor.id, { ts, rows: legs, jams: evening ? [{ leg: 1, category: 'jam', magnitude: 3, delayS: 600, startKm: 5, endKm: 6, lat: 12.95, lon: 80.25 }] : [] });
     }
   }
   return { travel, corridor };
 }
 
-test('profiles, tips and live status turn samples into advice', () => {
+test('rush shape, realistic shifts, the stretch that carries the delay, and live status', () => {
   const { travel, corridor } = recorded();
   const rows = travel.rows(corridor.id, '2026-09-27T00:00:00Z', '2026-10-01T00:00:00Z');
   assert.equal(istSlot('2026-09-29T12:45:00Z'), 18 * 60);
   assert.equal(dayType('2026-09-27T06:00:00Z'), 'weekend');
   const prof = travelProfile(rows, { sections: 3 });
   assert.equal(prof.weekday.length, 48);
-  assert.equal(prof.weekend.length, 0);
   const six = prof.weekday.find((s) => s.label === '18:00');
   assert.equal(six.days, 2);
-  assert.equal(Math.round(six.minutes), 26); // 10 free + 12 + 2 + 2
-  assert.equal(Math.round(six.freeMinutes), 10);
-  const { tips, enoughData } = commuterTips(corridor, prof);
+  assert.equal(Math.round(six.minutes), 26); // 10 at night + 12 + 2 + 2
+  assert.equal(six.observedShare, 1, 'live differs from the (flat) historic time by more than 2 min');
+  assert.equal(Math.round(nightBaseline(prof.weekday).minutes), 10);
+  const { tips, rushes, enoughData, baseline } = commuterTips(corridor, prof);
   assert.equal(enoughData, true);
+  assert.equal(Math.round(baseline.minutes), 10);
+  const eve = rushes.find((r) => r.period === 'evening');
+  assert.deepEqual([eve.startLabel, eve.peak.label, eve.endLabel], ['18:00', '18:00', '20:00']);
   const text = tips.map((t) => t.text).join('\n');
-  assert.match(text, /Worst weekday time: leaving at 18:00 takes about 26 min, against 10 min on an empty road/);
-  assert.match(text, /In the evening, leaving at 16:00 instead of 18:00 saves about 16 min/);
-  assert.match(text, /In the morning, leaving at 07:00 instead of 08:30 saves about 9 min/);
-  assert.match(text, /slowest stretch is B → C: 16 min for 4.4 km, 12 of the 16 extra minutes/);
-  const status = liveStatus(corridor, travel.latest(corridor.id), prof);
+  assert.match(text, /Evening rush: builds from 18:00, worst at 18:00 \(about 26 min\), eases by 20:00\. The same drive takes 10 min at night\./);
+  assert.match(text, /Leaving at 17:00 instead of 18:00 saves about 16 min \(10 vs 26\)/);
+  assert.match(text, /At 18:00, B → C carries 75% of the extra time: 16 min for 4\.4 km/);
+  assert.match(text, /Morning rush: builds from 08:30, worst at 08:30 \(about 16 min\), eases by 10:00/);
+  assert.match(text, /At 08:30, B → C carries 67% of the extra time/);
+  assert.doesNotMatch(text, /07:00|21:00|16:00/, 'no window edge can become advice');
+  const status = liveStatus(corridor, travel.latest(corridor.id), prof, baseline);
   assert.equal(status.level, 'clear');
   assert.equal(status.usualSource, 'recorded');
+  assert.equal(status.nightSource, 'recorded');
+  assert.equal(status.unusual, false);
   assert.equal(Math.round(status.minutes), 10);
+});
+
+test('no quick win and a spread-out delay are said plainly', () => {
+  // Synthetic weekday profile: a broad evening rush, three equal stretches, no slot an hour away much better.
+  const slot = (h, m, minutes, legs) => ({ slot: h * 60 + m, label: `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`, days: 3, samples: 6, minutes, p10: minutes - 2, p90: minutes + 3, sectionMinutes: legs, observedShare: 0.4 });
+  const weekday = [];
+  for (let t = 0; t < 24 * 60; t += 30) {
+    const h = Math.floor(t / 60), m = t % 60;
+    const busy = t >= 15 * 60 && t < 22 * 60;
+    const peak = t === 18 * 60 + 30 ? 4 : t === 18 * 60 || t === 19 * 60 ? 2 : 0;
+    const extra = busy ? 9 + peak : 0;
+    weekday.push(slot(h, m, 30 + extra, [10 + extra / 3, 10 + extra / 3, 10 + extra / 3]));
+  }
+  const corridor = { definition: { sections: [{ from: 'A', to: 'B', lengthKm: 3 }, { from: 'B', to: 'C', lengthKm: 3 }, { from: 'C', to: 'D', lengthKm: 3 }] } };
+  const { tips } = commuterTips(corridor, { weekday, weekend: [] });
+  const text = tips.map((t) => t.text).join('\n');
+  assert.match(text, /Evening rush: builds from 15:00, worst at 18:30 \(about 43 min, 41–46 on most days\), eases by 22:00/);
+  assert.match(text, /No quick win around 18:30: leaving up to an hour earlier or later saves at most 4 min/);
+  assert.match(text, /At 18:30 the delay is spread along the road/);
+  assert.match(text, /Morning: no real rush/);
+});
+
+test('confidence, source labels, next commute and cross-road notes', () => {
+  assert.equal(confidenceOf(3).level, 'early');
+  assert.equal(confidenceOf(5).level, 'provisional');
+  assert.equal(confidenceOf(10).level, 'established');
+  const flat = [{ ts: '2026-09-29T10:00:00Z', leg: 0, travel_s: 600, historic_s: 600 }, { ts: '2026-09-29T10:15:00Z', leg: 0, travel_s: 610, historic_s: 600 }];
+  assert.equal(sourceOf(flat, 1).kind, 'modelled');
+  assert.equal(sourceOf([{ ts: '2026-09-29T10:00:00Z', leg: 0, travel_s: 900, historic_s: 600 }], 1).kind, 'observed');
+  assert.equal(nextCommute('2026-10-01T04:00:00Z'), 'morning'); // 09:30 IST
+  assert.equal(nextCommute('2026-10-01T09:00:00Z'), 'evening'); // 14:30 IST
+  assert.equal(nextCommute('2026-10-01T17:00:00Z'), 'morning'); // 22:30 IST
+  const rush = (period, h, minutes) => ({ period, peak: { slot: h * 60, label: `${h}:00`, minutes } });
+  const road = (id, road, direction, rushes) => ({ corridor: { id, name: id, definition: { road, direction } }, rushes });
+  const notes = crossRoadNotes([
+    road('a-n', 'a', 'northbound', [rush('morning', 10, 40), rush('evening', 19, 38)]),
+    road('a-s', 'a', 'southbound', [rush('morning', 9, 30), rush('evening', 18, 49)]),
+    road('b-n', 'b', 'northbound', [rush('evening', 17, 64)]),
+    road('b-s', 'b', 'southbound', [rush('evening', 18, 64)]),
+  ]);
+  assert.deepEqual(notes.get('a-n'), ['Unlike most monitored roads, its worst rush is in the morning (10:00).']);
+  assert.deepEqual(notes.get('b-n'), ["Its evening peak comes an hour before the southbound direction's."]);
+  assert.deepEqual(notes.get('a-s'), ["Its morning peak comes an hour before the northbound direction's.", "Its evening peak comes an hour before the northbound direction's."]);
+  assert.equal(rushShapes([], null).length, 0);
 });
 
 test('advice waits for two days of data', () => {

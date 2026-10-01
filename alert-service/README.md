@@ -58,11 +58,25 @@ This replaced point sampling of TomTom Flow Segment Data on 29 Sep 2026: on OMR 
 - `GET /corridors/:id/tips` — the same advice as JSON, with weekday and weekend profiles. `GET /corridors/:id/travel?hours=` — raw totals.
 - `POST /corridors/sample` · `POST /corridors/:id/sample` · `POST /corridors/:id/notes {"at": ISO, "text": "..."}`
 
-Advice (worst time, best time to leave in the morning and evening windows, which stretch carries the delay, weekend contrast) waits until two weekdays are recorded for a time slot.
+Findings follow rules written so they hold up in front of officials (all on `/methodology`):
+
+- The reference is our own night-time drive (quickest typical slot before 05:30), not TomTom's no-traffic time, which is slower than real night drives here.
+- "Typical" is the median of a 30-minute departure slot; "most days" is its 10th–90th percentile range.
+- Each rush is found over the whole day: the peak in the morning (05:00–13:00) or later (13:00–24:00), and the span where the road stays at least 30% of the way from night-time to peak. No fixed window can turn its edge into advice.
+- A departure shift is advised only if it saves at least 6 minutes within an hour of the peak; otherwise the page says there is no quick win.
+- A stretch is named as the bottleneck only if it carries a third of the extra time and 1.5 times the next stretch's; otherwise the delay is "spread".
+- Each road is labelled live observation or mostly TomTom's model (whether live departs from TomTom's typical time by 2 minutes or 5% in at least 15% of readings), and early (<5 weekdays), provisional (5–9) or established (10+). Weekly reports keep early findings apart from established ones.
+- Cross-road notes call out a road that peaks in the morning when most peak in the evening, and directions that peak an hour or more apart.
+
+Rain: Open-Meteo hourly rainfall at one point per road (`RAIN_MINUTES`, default 60), shaded on charts and compared with typical in the weekly report. Tamil Nadu public holidays are seeded as notes on every road.
+
+Daily roll-up: every finished IST day is summarised per road and 30-minute slot (median, range, TomTom typical and no-traffic, observed share, rain, per-stretch medians) in `route_slot_daily`. `GET /export/slots.csv?from=&to=&corridor=` returns it (admin token unless `EXPORT_PUBLIC=1`, pending TomTom's view on sharing derived data). `RAW_RETENTION_DAYS` (default 0, keep) deletes raw readings older than that once their day is rolled up, for TomTom's storage limits. `POST /rollup` runs the roll-up now.
+
+`GET /methodology` is the public method page: definitions, each road's status and source, known limits, licensing, events on record.
 
 ## Incidents and trouble spots
 
-Every `INCIDENT_MINUTES` (15) the service records TomTom's live incidents for the Chennai box (`INCIDENT_BBOX`, default `80.0,12.75,80.35,13.25`): accidents, jams, closures, roadworks, flooding, breakdowns. Each incident is kept once with first and last sighting. Trouble spots group incidents into ~330 m cells, weighting accidents 5, flooding 3, breakdowns 2 and a major jam 1 per day; planned closures and roadworks do not count. They show where trouble recurs; they are not official accident records, and official crash locations from the traffic police would sharpen them. `GET /incidents?days=30` returns current incidents and trouble spots.
+Every `INCIDENT_MINUTES` (15) the service records TomTom's live incidents for the Chennai box (`INCIDENT_BBOX`, default `80.0,12.75,80.35,13.25`): accidents, jams, closures, roadworks, flooding, breakdowns. Each incident is kept once with first and last sighting. Trouble spots group incidents into ~330 m cells, weighting accidents 5, flooding 3, breakdowns 2 and a major jam 1 per day; planned closures and roadworks do not count. They show where trouble recurs; they are not official accident records. In practice TomTom reports almost no accidents in Chennai, so the page shows two lists: recurring jams (a major jam on two or more days, ranked by days seen then typical delay) and accident/flooding spots, which stay empty until such reports appear. `GET /incidents?days=30` returns current incidents, recurring jams and safety spots.
 
 On a laptop, set `CORRIDOR_MINUTES=0` and `INCIDENT_MINUTES=0` when a hosted copy records with the same TomTom key (`run-alerts.sh` does).
 
