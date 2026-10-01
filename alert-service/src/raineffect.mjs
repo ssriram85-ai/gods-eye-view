@@ -61,11 +61,21 @@ export function rainEffect({ corridor, rows, rain }) {
   };
 }
 
+/** Below this, an effect is within ordinary day-to-day variation. */
+export const CLEAR_EFFECT_MIN = 1.5;
+
 /** One plain sentence for a road's rain effect. */
 export function rainText(e) {
   const known = (e?.bands || []).filter((b) => b.enough);
   if (!known.length) return `not enough rain recorded yet (${e?.wetReadings || 0} wet reading${e?.wetReadings === 1 ? '' : 's'}; each band needs ${MIN.readings} across ${MIN.days} days)`;
-  const parts = known.map((b) => `${b.band} rain adds about ${Math.round(b.extraMinutes)} min`);
-  const worst = known[known.length - 1].stretches.filter((s) => s.extraMinutes != null).sort((a, b) => b.extraMinutes - a.extraMinutes)[0];
-  return `${parts.join('; ')}${worst ? `; the stretch that suffers most is ${worst.stretch} (+${Math.round(worst.extraMinutes)} min in ${known[known.length - 1].band} rain)` : ''}`;
+  const parts = known.map((b) =>
+    Math.abs(b.extraMinutes) < CLEAR_EFFECT_MIN
+      ? `${b.band} rain: no clear effect`
+      : b.extraMinutes > 0
+        ? `${b.band} rain adds about ${Math.round(b.extraMinutes)} min`
+        : `${b.band} rain: drives were ${Math.round(-b.extraMinutes)} min quicker than usual, which needs more wet days to explain`,
+  );
+  const wettest = known[known.length - 1];
+  const worst = wettest.stretches.filter((x) => x.extraMinutes != null && x.extraMinutes >= CLEAR_EFFECT_MIN).sort((a, b) => b.extraMinutes - a.extraMinutes)[0];
+  return `${parts.join('; ')}${worst ? `; the stretch that suffers most is ${worst.stretch} (+${Math.round(worst.extraMinutes)} min in ${wettest.band} rain)` : ''}`;
 }

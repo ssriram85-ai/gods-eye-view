@@ -70,6 +70,8 @@ test('rain effect needs enough wet readings, then reports minutes per band and t
   assert.deepEqual(moderate.stretches.map((s) => s.extraMinutes), [2, 6]);
   assert.equal(rainText(e), 'moderate rain adds about 8 min; the stretch that suffers most is B → C (+6 min in moderate rain)');
   assert.equal(MIN.readings, 6);
+  const small = { bands: [{ band: 'drizzle', enough: true, extraMinutes: -2, stretches: [{ stretch: 'X → Y', extraMinutes: 0.2 }] }, { band: 'light', enough: true, extraMinutes: 0.8, stretches: [{ stretch: 'X → Y', extraMinutes: 0.4 }] }] };
+  assert.equal(rainText(small), 'drizzle rain: drives were 2 min quicker than usual, which needs more wet days to explain; light rain: no clear effect', 'no worst stretch named at a trivial effect');
 });
 
 test('the brief prints one page per road and says plainly when it is not for formal use', () => {
