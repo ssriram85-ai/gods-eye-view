@@ -10,7 +10,7 @@ import { fetchIncidents, createIncidentStore, recurringJams, safetySpots, CHENNA
 import { fetchRain, createWeatherStore, RAIN_POINTS } from './weather.mjs';
 import { createRollupStore, daysToRoll, rollupCsv } from './rollup.mjs';
 import { renderMethodology } from './methodology.mjs';
-import { googleDrive, compareDrives, createCrossCheckStore, parseHours, istHour, istMonth } from './crosscheck.mjs';
+import { googleDrive, compareDrives, createCrossCheckStore, parseHours, istHour, istMonth, formalReadiness } from './crosscheck.mjs';
 import { renderReport } from './report.mjs';
 import { renderSummary } from './summary.mjs';
 import { createGeocoder } from './geocode.mjs';
@@ -247,7 +247,12 @@ function allInsights() {
   const order = corridorDefinitions().map((d) => d.id);
   const list = sectionedCorridors().sort((a, b) => (order.indexOf(a.id) + 1 || 99) - (order.indexOf(b.id) + 1 || 99)).map(roadInsight);
   const notes = crossRoadNotes(list);
-  for (const r of list) r.notes = notes.get(r.corridor.id) || [];
+  const agreement = new Map(crosschecks.summary(new Date(Date.now() - 30 * DAY).toISOString()).map((x) => [x.corridor_id, x]));
+  for (const r of list) {
+    r.notes = notes.get(r.corridor.id) || [];
+    r.agreement = agreement.get(r.corridor.id) || null;
+    r.formal = formalReadiness(r.confidence, r.agreement);
+  }
   return list;
 }
 let summaryCache = { at: 0, html: '' };
@@ -279,7 +284,11 @@ function weeklyReport(week) {
   const rainFor = (c) => (RAIN_POINTS[c.definition?.road] ? weather.series(c.definition.road, new Date(Date.parse(week.start) - 28 * DAY).toISOString(), week.end) : null);
   const summaries = addCrossRoadNotes(list.map((corridor) => summarizeWeek({ travel, corridor, week, rain: rainFor(corridor) })));
   const agreement = new Map(crosschecks.summary(week.start).map((r) => [r.corridor_id, r]));
-  for (const s of summaries) s.agreement = agreement.get(s.corridor.id) || null;
+  const agreement30 = new Map(crosschecks.summary(new Date(Date.parse(week.end) - 30 * DAY).toISOString()).map((r) => [r.corridor_id, r]));
+  for (const s of summaries) {
+    s.agreement = agreement.get(s.corridor.id) || null;
+    s.formal = formalReadiness(s.confidence, agreement30.get(s.corridor.id) || null);
+  }
   const city = summarizeCity({ incidents, week });
   const notes = [...new Map(list.flatMap((c) => corridors.listNotes(c.id)).filter((n) => n.at >= week.start && n.at < week.end).sort((a, b) => a.at.localeCompare(b.at)).map((n) => [n.text, n])).values()];
   weeklyStore.write(week.key, { week, generatedAt: new Date().toISOString(), summaries, city });
@@ -486,7 +495,7 @@ const server = createServer(async (req, res) => {
         rainSince: corridors.db.prepare('SELECT MIN(hour) AS h FROM rain_hourly').get()?.h || null,
         retentionDays: RAW_RETENTION_DAYS,
         exportPublic: EXPORT_PUBLIC,
-        crosscheck: { configured: Boolean(GOOGLE_ROUTES_KEY), rows: crosschecks.summary(new Date(Date.now() - 30 * DAY).toISOString()) },
+        crosscheck: { configured: Boolean(GOOGLE_ROUTES_KEY), hours: GOOGLE_CHECK_HOURS, cap: GOOGLE_MONTHLY_CAP, rows: crosschecks.summary(new Date(Date.now() - 30 * DAY).toISOString()) },
         notes: corridors.db.prepare('SELECT * FROM notes ORDER BY at').all().filter((n, i, all) => all.findIndex((x) => x.text === n.text) === i),
       }), 'public, max-age=300');
     }
@@ -585,7 +594,7 @@ const server = createServer(async (req, res) => {
           notes: corridors.listNotes(corridor.id),
           comparison,
           windows: { hours, a: a?.label, b: b?.label },
-          travel: insight && { totals: travel.totals(corridor.id, from, to), latest: insight.latest, status: insight.status, tips: insight.tips, notes: insight.notes, profile: insight.profile, baseline: insight.baseline, source: insight.source, confidence: insight.confidence, jams: travel.jams(corridor.id, from, to), rain: RAIN_POINTS[road] ? weather.series(road, from, to) : null },
+          travel: insight && { totals: travel.totals(corridor.id, from, to), latest: insight.latest, status: insight.status, tips: insight.tips, notes: insight.notes, agreement: insight.agreement, formal: insight.formal, googleConfigured: Boolean(GOOGLE_ROUTES_KEY), profile: insight.profile, baseline: insight.baseline, source: insight.source, confidence: insight.confidence, jams: travel.jams(corridor.id, from, to), rain: RAIN_POINTS[road] ? weather.series(road, from, to) : null },
         }));
       }
     }

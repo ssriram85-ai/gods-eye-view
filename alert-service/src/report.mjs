@@ -1,3 +1,4 @@
+import { agreementText } from './crosscheck.mjs';
 /** Self-contained HTML report for one corridor: no external assets. */
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const pct = (v) => (v == null ? '—' : `${Math.round(v * 100)}%`);
@@ -77,7 +78,8 @@ function travelSection(corridor, t, notes, hours) {
   const night = t.baseline;
   const byPeriod = (period) => (t.tips || []).filter((x) => x.period === period);
   return `<p class="labels"><span class="lab">${{ observed: 'Varies day to day (live)', partly: 'Partly live', modelled: "Mostly TomTom's pattern", unknown: 'Source not yet known' }[t.source?.kind || 'unknown']}</span><span class="lab">${esc(t.confidence?.text || '')}</span></p>
-${t.source ? `<p class="muted">Source: ${esc(t.source.text)}.</p>` : ''}
+${t.source ? `<p class="muted">Day to day: ${esc(t.source.text)}.</p>` : ''}
+<p class="muted">Second source: ${t.googleConfigured ? (t.agreement?.compared ? `over the last 30 days, ${esc(agreementText(t.agreement))}${t.agreement.route_differs ? ` (${t.agreement.route_differs} check(s) left out: Google took a different route)` : ''}.` : 'Google checks have started; no comparison on this road yet.') : 'not yet connected.'}${t.formal ? ` <b>${esc(t.formal.text)}</b>` : ''} <a href="/methodology">How this is judged</a>.</p>
 <div class="grid">
 <div class="tile"><span class="muted">Now (${st ? ist(st.ts) : '—'})</span><b style="color:${LEVEL_COLOR[st?.level || 'unknown']}">${st ? Math.round(st.minutes) + ' min' : '—'}</b><span class="muted">${st?.unusual ? 'UNUSUAL for this time' : st?.level || ''}</span></div>
 <div class="tile"><span class="muted">Typical at this time</span><b>${st?.usualMinutes == null ? '—' : Math.round(st.usualMinutes) + ' min'}</b><span class="muted">${st?.usualRange ? `${Math.round(st.usualRange[0])}–${Math.round(st.usualRange[1])} most days` : st?.usualSource === 'tomtom' ? "TomTom's history (too few days of ours)" : ''}</span></div>
@@ -113,7 +115,7 @@ tr.bad td{color:#ff7a8a}tr.good td{color:#7fe6a5}code{background:#1a2230;padding
 .pts{display:flex;gap:3px;margin:8px 0}a{color:#52d4ff}ul{padding-left:20px}li{margin:4px 0}.bars-wrap{display:flex;gap:6px;margin:8px 0 22px}.axis{display:flex;flex-direction:column;justify-content:space-between;font-size:10px;color:#9aa;height:150px;white-space:nowrap}.bars{flex:1;display:flex;align-items:flex-end;gap:2px;height:150px}.bars div{flex:1;height:100%;position:relative}.bars span{position:absolute;bottom:0;left:0;right:0;background:#52d4ff;border-radius:2px 2px 0 0;opacity:.85}.bars i{position:absolute;left:45%;width:2px;background:#e6edf3;opacity:.7;z-index:1}.bars em{position:absolute;bottom:-16px;left:0;font-size:10px;color:#9aa;font-style:normal}.labels{margin:6px 0}.lab{display:inline-block;border:1px solid #2a3646;border-radius:99px;padding:1px 9px;margin-right:6px;font-size:12px;color:#c9d4e0}.pts span{flex:1;height:14px;border-radius:3px}
 </style></head><body>
 <h1>${esc(corridor.name)}</h1>
-<p class="muted">${corridor.lengthKm} km · ${travel ? `${(corridor.definition?.sections || []).length} stretches · TomTom live-traffic routing every 15 minutes` : `${corridor.points.length} sample points · TomTom flow`} · times in ${tz} · <a href="/">all roads</a></p>
+<p class="muted">${corridor.lengthKm} km · ${travel ? `${(corridor.definition?.sections || []).length} stretches · TomTom live-traffic routing every 15 minutes, checked hourly against Google` : `${corridor.points.length} sample points · TomTom flow`} · times in ${tz} · <a href="/">all roads</a></p>
 ${travel ? travelSection(corridor, travel, notes, windows.hours) + (series.length ? '<h2 class="muted">Earlier record: point speeds, 24–29 Sep 2026</h2><p class="muted">Before section travel times, the monitor sampled TomTom flow at points; on OMR those points shared a few long road segments, so it understated local jams. Kept for reference.</p>' : '') : ''}
 ${!travel || series.length ? `<div class="grid">
 <div class="tile"><span class="muted">Now (${last ? ist(last.ts) : '—'})</span><b>${pct(last?.speed_ratio)}</b><span class="muted">of free-flow speed</span></div>

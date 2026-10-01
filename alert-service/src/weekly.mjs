@@ -189,8 +189,8 @@ export function renderWeeklyHtml({ summaries, city, notes = [], week, baseUrl = 
   const findings = (s) => {
     const list = s.tips.map((t) => t.text).concat(s.notes || []);
     if (!list.length) return `<p style="margin:0 0 8px;color:#777;font-size:13px">Rush windows and advice appear once each half-hour has been recorded on two weekdays.</p>`;
-    const firm = s.confidence.level === 'established';
-    return `<p style="margin:0 0 4px;font-size:13px;font-weight:600;color:${firm ? '#1e8449' : '#7f6000'}">${firm ? 'Findings' : `Early observations, not for formal use (${esc(s.confidence.text)})`}</p><ul style="margin:0 0 8px;padding-left:18px;color:#333">${list.map((t) => `<li style="margin:0 0 3px">${esc(t)}</li>`).join('')}</ul>`;
+    const firm = s.formal ? s.formal.ready : s.confidence.level === 'established';
+    return `<p style="margin:0 0 4px;font-size:13px;font-weight:600;color:${firm ? '#1e8449' : '#7f6000'}">${firm ? 'Findings (ready for formal use)' : `Observations, not yet for formal use: ${esc(s.formal ? s.formal.text.replace(/^Not yet: /, '') : s.confidence.text)}`}</p><ul style="margin:0 0 8px;padding-left:18px;color:#333">${list.map((t) => `<li style="margin:0 0 3px">${esc(t)}</li>`).join('')}</ul>`;
   };
   const section = (s) => `
 <div style="margin:0 0 26px">
@@ -213,17 +213,17 @@ ${city.recurring.map((h) => `<tr><td style="${td};text-align:left;white-space:no
 ${city.safety.length ? `<p style="margin:10px 0 6px;color:#333">Accident, breakdown and flooding spots:</p><ul>${city.safety.map((h) => `<li>${esc(h.place || 'unnamed road')}: ${Object.entries(h.kinds).map(([k, n]) => `${n} ${esc(k)}`).join(', ')}</li>`).join('')}</ul>` : ''}`
     : '';
   const roads = [...new Set(summaries.map((s) => s.corridor.road))];
-  const established = summaries.filter((s) => s.confidence.level === 'established').length;
+  const established = summaries.filter((s) => (s.formal ? s.formal.ready : s.confidence.level === 'established')).length;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Chennai roads · week ${esc(week.key)}</title></head>
 <body style="margin:0;padding:20px;background:#fff;color:#111;font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
 <div style="max-width:760px;margin:0 auto">
 <h1 style="font-size:20px;margin:0 0 2px">Chennai roads · week ${esc(week.key)}</h1>
 <p style="margin:0 0 6px;color:#777">${esc(week.label)} (Monday to Sunday, IST) · generated ${esc(generatedAt.toISOString().slice(0, 16).replace('T', ' '))} UTC${baseUrl ? ` · <a href="${esc(baseUrl)}/" style="color:#1a5fb4">live page</a> · <a href="${esc(baseUrl)}/methodology" style="color:#1a5fb4">method and limits</a>` : ''}</p>
-<p style="margin:0 0 18px;color:#333;font-size:13px">${established === summaries.length ? 'All roads have enough weekdays recorded for established findings.' : `${established} of ${summaries.length} road directions have established findings; the rest are early observations and are labelled as such.`}</p>
+<p style="margin:0 0 18px;color:#333;font-size:13px">${established === summaries.length ? 'All road directions meet the bar for formal use: enough weekdays recorded and confirmed against Google.' : `${established} of ${summaries.length} road directions meet the bar for formal use (enough weekdays recorded and confirmed against Google); the rest are labelled as observations.`}</p>
 ${roads.map((r) => `<h2 style="font-size:17px;margin:22px 0 8px">${esc(ROAD_NAME[r] || r || 'Roads')}</h2>${summaries.filter((s) => s.corridor.road === r).map(section).join('')}`).join('')}
 ${cityBlock}
 ${notes.length ? `<h2 style="font-size:17px;margin:28px 0 6px">Events on record this week</h2><ul style="padding-left:18px;color:#333">${notes.map((n) => `<li>${esc(new Date(Date.parse(n.at) + IST_MIN * 60_000).toISOString().slice(0, 16).replace('T', ' '))}: ${esc(n.text)}</li>`).join('')}</ul>` : ''}
-<p style="color:#777;font-size:12px;margin-top:24px">Travel times are TomTom live-traffic routing along each road every 15 minutes, split at the named junctions. "Typical" is the median and "bad day" the 90th percentile of weekday drives inside each rush window; rush windows and advice rest on all days recorded so far. Rain is Open-Meteo's hourly model at mid-road. Traffic data © TomTom.</p>
+<p style="color:#777;font-size:12px;margin-top:24px">Travel times are TomTom live-traffic routing along each road every 15 minutes, split at the named junctions, checked hourly against Google's live-traffic routing for the same drive; Google's own times are not stored, only how often the two agree. "Typical" is the median and "bad day" the 90th percentile of weekday drives inside each rush window; rush windows and advice rest on all days recorded so far. Rain is Open-Meteo's hourly model at mid-road. Traffic data © TomTom.</p>
 </div></body></html>`;
 }
 

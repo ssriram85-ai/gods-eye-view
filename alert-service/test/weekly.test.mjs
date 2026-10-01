@@ -80,6 +80,8 @@ test('a week is summarized inside rush windows found from all days, against the 
 test('city incidents: recurring jams and safety spots, and the rendered email', () => {
   const { travel, incidents, corridor, week } = seeded();
   const s = addCrossRoadNotes([summarizeWeek({ travel, corridor, week, rain: RAIN })])[0];
+  s.formal = { ready: true, text: 'Ready for formal use.' };
+  s.agreement = { compared: 40, within10: 34, within20: 39, congestion_agree: 36, congestion_known: 40, legs_within20: 0, legs_known: 0 };
   const city = summarizeCity({ incidents, week });
   assert.equal(city.accidents, 2);
   assert.equal(city.recurring.length, 1);
@@ -88,8 +90,10 @@ test('city incidents: recurring jams and safety spots, and the rendered email', 
   assert.equal(city.safety[0].kinds.accident, 2);
   const html = renderWeeklyHtml({ summaries: [s], city, notes: [{ at: '2026-09-24T02:30:00.000Z', text: 'U-turns closed' }], week, baseUrl: 'https://gev.example' });
   assert.match(html, /Chennai roads · week 2026-W39/);
-  assert.match(html, /All roads have enough weekdays recorded for established findings/);
-  assert.match(html, />Findings</);
+  assert.match(html, /All road directions meet the bar for formal use: enough weekdays recorded and confirmed against Google/);
+  assert.match(html, />Findings \(ready for formal use\)</);
+  assert.match(html, /second source: within 10% of Google in 85% and within 20% in 98% of 40 checks/);
+  assert.match(html, /checked hourly against Google's live-traffic routing for the same drive; Google's own times are not stored/);
   assert.match(html, /Varies day to day \(live\)/);
   assert.match(html, /Evening <span style="color:#888">16:30–20:30/);
   assert.match(html, /\+4 min/);
@@ -113,6 +117,6 @@ test('an empty week, and early data labelled as early', () => {
   const first = summarizeWeek({ travel, corridor, week: weekBounds('2026-W38') });
   assert.equal(first.confidence.level, 'provisional', 'five weekdays recorded by the end of the first week');
   const html = renderWeeklyHtml({ summaries: [empty, first], city: null, week: weekBounds('2026-W38') });
-  assert.match(html, /Early observations, not for formal use \(provisional: 5 weekdays recorded/);
-  assert.match(html, /0 of 2 road directions have established findings/);
+  assert.match(html, /Observations, not yet for formal use: provisional: 5 weekdays recorded/);
+  assert.match(html, /0 of 2 road directions meet the bar for formal use/);
 });

@@ -174,3 +174,32 @@ export function agreementText(row) {
   if (row.legs_known) parts.push(`stretch by stretch, ${pct(row.legs_within20, row.legs_known)} within 20%`);
   return parts.join('; ');
 }
+
+/** "03:00 and every hour from 06:00 to 23:00" for a set of IST hours. */
+export function describeHours(hours) {
+  const list = [...hours].sort((a, b) => a - b);
+  const runs = [];
+  for (const h of list) {
+    const last = runs[runs.length - 1];
+    if (last && h === last[1] + 1) last[1] = h;
+    else runs.push([h, h]);
+  }
+  const hh = (h) => `${String(h).padStart(2, '0')}:00`;
+  const parts = runs.map(([a, b]) => (a === b ? hh(a) : `every hour from ${hh(a)} to ${hh(b)}`));
+  return parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0] || 'never';
+}
+
+/**
+ * The service's own bar for a road's findings to go into a formal
+ * submission: established on TomTom's record, and checked against Google
+ * often enough, with enough agreement.
+ */
+export const FORMAL = Object.freeze({ minChecks: 50, minWithin20: 0.8 });
+export function formalReadiness(confidence, agreement) {
+  const reasons = [];
+  if (confidence?.level !== 'established') reasons.push(`needs ${confidence?.level === 'provisional' ? 'more' : 'many more'} weekdays recorded`);
+  const compared = agreement?.compared || 0;
+  if (compared < FORMAL.minChecks) reasons.push(`needs ${FORMAL.minChecks - compared} more Google checks`);
+  else if (agreement.within20 / compared < FORMAL.minWithin20) reasons.push(`Google agreement within 20% is ${Math.round((agreement.within20 / compared) * 100)}%, below ${Math.round(FORMAL.minWithin20 * 100)}%`);
+  return { ready: reasons.length === 0, text: reasons.length ? `Not yet: ${reasons.join('; ')}.` : 'Ready for formal use.' };
+}

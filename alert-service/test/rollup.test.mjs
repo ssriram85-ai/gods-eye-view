@@ -91,12 +91,36 @@ test('the methodology page states definitions, per-road status and limits from l
     notes: [{ at: '2026-10-18T18:30:00.000Z', text: 'Public holiday: Ayudha Pooja' }],
   });
   assert.match(html, /How these numbers are made/);
-  assert.match(html, /Mostly TomTom's pattern<div class="muted">2% of half-hour slots differ between weekdays by 3\+ min/);
+  assert.match(html, /Mostly TomTom's pattern<div class="muted">2% of half-hours differ by 3\+ min/);
+  assert.match(html, /The check<\/b> is being connected; until it is, every figure rests on TomTom alone/);
+  assert.match(html, /Not yet: needs many more weekdays recorded; needs 50 more Google checks\./);
   assert.match(html, />early</);
   assert.match(html, /Night-time drive/);
   assert.match(html, /at least 6 minutes/);
   assert.match(html, /reports 175 road closed, 116 jam\. Accident locations need official records/);
   assert.match(html, /Raw readings are currently kept while that limit is confirmed with TomTom/);
-  assert.match(html, /available on request while the licensing question is open/);
+  assert.match(html, /available on request while TomTom confirms its sharing terms/);
+  assert.match(html, /section 19\.3\) allow caching only latitude and longitude/);
   assert.match(html, /2026-10-19 00:00<\/td><td>Public holiday: Ayudha Pooja/);
+});
+
+test('with Google connected the page shows the schedule, agreement and which roads are fit for formal use', () => {
+  const road = (id, level, weekdays) => ({ corridor: { id, name: id, lengthKm: 20, definition: { sections: [{}, {}] } }, since: '2026-09-29T06:09:00Z', days: { weekdays, weekendDays: 4 }, source: { kind: 'observed', share: 0.2 }, confidence: { level } });
+  const html = renderMethodology({
+    roads: [road('omr-south', 'established', 12), road('ecr-north', 'established', 12)],
+    crosscheck: {
+      configured: true, hours: new Set([3, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]), cap: 4800,
+      rows: [
+        { corridor_id: 'omr-south', compared: 60, within10: 48, within20: 57, congestion_agree: 54, congestion_known: 60, legs_within20: 300, legs_known: 360, route_differs: 2, errors: 0 },
+        { corridor_id: 'ecr-north', compared: 60, within10: 30, within20: 40, congestion_agree: 50, congestion_known: 60, legs_within20: 200, legs_known: 300, route_differs: 0, errors: 1 },
+      ],
+    },
+  });
+  assert.match(html, /The check<\/b> is Google's live-traffic drive for the same road at the same moment, 03:00 and every hour from 06:00 to 23:00 \(IST\)\. So far TomTom's time has been within 10% of Google's in 65% of 120 checks, and within 20% in 81%\./);
+  assert.match(html, /Fit for a formal submission<\/b> today: 1 of 2 road directions/);
+  assert.match(html, /within 10% of Google in 80% and within 20% in 95% of 60 checks/);
+  assert.match(html, /2 check\(s\) left out: Google's route differed/);
+  assert.match(html, /<td><b>Yes<\/b><\/td>/);
+  assert.match(html, /Not yet: Google agreement within 20% is 67%, below 80%\./);
+  assert.match(html, /03:00 and every hour from 06:00 to 23:00 \(IST\), straight after a TomTom reading/);
 });
