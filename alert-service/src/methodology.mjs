@@ -4,11 +4,13 @@
  * known limits. Numbers on the page are live, from the recorded data.
  */
 import { SHIFT_MIN_SAVING, CONFIDENCE, VARIES_MIN, SOURCE_LEVELS } from './insights.mjs';
+import { agreementText } from './crosscheck.mjs';
 
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const pct = (x) => (x == null ? '—' : `${Math.round(x * 100)}%`);
 
-export function renderMethodology({ roads, incidentCounts = [], incidentsSince = null, rainSince = null, retentionDays = 0, exportPublic = false, notes = [], generatedAt = new Date() }) {
+export function renderMethodology({ roads, incidentCounts = [], incidentsSince = null, rainSince = null, retentionDays = 0, exportPublic = false, notes = [], crosscheck = null, generatedAt = new Date() }) {
+  const agree = new Map((crosscheck?.rows || []).map((r) => [r.corridor_id, r]));
   const levelColour = { established: '#1e8449', provisional: '#b7950b', early: '#7f8c8d' };
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>How these numbers are made</title>
 <style>
@@ -33,6 +35,10 @@ ${roads.map((r) => `<tr><td>${esc(r.corridor.name)}<div class="muted">${r.corrid
 </table>
 <p class="muted">Status: <b>early</b> under ${CONFIDENCE.provisional} weekdays; <b>provisional</b> from ${CONFIDENCE.provisional}; <b>established</b> from ${CONFIDENCE.established}. Findings marked early or provisional are shown as such and are not for formal submissions.</p>
 
+<h2>Second source: Google</h2>
+${crosscheck?.configured ? `<p>Every hour from 06:00 to 23:00 and once at 03:00 (IST), the same drives are requested from Google's Routes service with live traffic, at the moment of a TomTom reading, and compared. Google's terms do not allow its travel times to be stored, so only the outcome of each comparison is kept: whether the two agree within 10% or 20%, whether both saw congestion (live at least 20% over each source's own no-traffic time), and how many stretches agree. Last 30 days:</p>
+<table><tr><th>Road</th><th>Agreement with Google</th></tr>${roads.map((r) => `<tr><td>${esc(r.corridor.name)}</td><td>${esc(agreementText(agree.get(r.corridor.id)))}${agree.get(r.corridor.id)?.route_differs ? `<div class="muted">${agree.get(r.corridor.id).route_differs} check(s) skipped: Google chose a different route</div>` : ''}</td></tr>`).join('')}</table>` : '<p>A second traffic source (Google Routes) is being connected. Until it is, every travel time on this site rests on TomTom alone.</p>'}
+
 <h2>Definitions</h2>
 <dl>
 <dt>Typical</dt><dd>The median of all readings in the same 30-minute departure slot, weekdays and weekends kept apart.</dd>
@@ -48,7 +54,7 @@ ${roads.map((r) => `<tr><td>${esc(r.corridor.name)}<div class="muted">${r.corrid
 
 <h2>Known limits</h2>
 <ul>
-<li><b>One traffic source.</b> All travel times come from TomTom. A second source and timed drives on the ground are planned and not yet in place.</li>
+<li><b>${crosscheck?.configured ? 'Second source is a check, not a record.' : 'One traffic source.'}</b> ${crosscheck?.configured ? 'All published travel times come from TomTom; Google is used only to measure how often the two agree. Timed drives on the ground are planned and not yet in place.' : 'All travel times come from TomTom. A second source and timed drives on the ground are planned and not yet in place.'}</li>
 <li><b>Model on some roads.</b> Where TomTom has little live data, its "live" time follows its historical pattern. Those roads are labelled above; their day-to-day changes are not well observed.</li>
 <li><b>No accident record.</b> TomTom's incident feed for Chennai${incidentsSince ? ` since ${esc(incidentsSince.slice(0, 10))}` : ''} reports ${incidentCounts.length ? incidentCounts.map((c) => `${c.n} ${esc(c.category)}`).join(', ') : 'no incidents yet'}. Accident locations need official records (iRAD or the Traffic Police's blackspot list); nothing here is an accident statistic.</li>
 <li><b>Rain is modelled.</b> Hourly rainfall per road comes from Open-Meteo's weather model${rainSince ? ` (recorded since ${esc(rainSince.slice(0, 10))})` : ''}, not from rain gauges.</li>

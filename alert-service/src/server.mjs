@@ -10,6 +10,7 @@ import { fetchIncidents, createIncidentStore, recurringJams, safetySpots, CHENNA
 import { fetchRain, createWeatherStore, RAIN_POINTS } from './weather.mjs';
 import { createRollupStore, daysToRoll, rollupCsv } from './rollup.mjs';
 import { renderMethodology } from './methodology.mjs';
+import { googleDrive, compareDrives, createCrossCheckStore, parseHours, istHour, istMonth } from './crosscheck.mjs';
 import { renderReport } from './report.mjs';
 import { renderSummary } from './summary.mjs';
 import { createGeocoder } from './geocode.mjs';
@@ -69,6 +70,10 @@ const RAW_RETENTION_DAYS = Number(process.env.RAW_RETENTION_DAYS || 0);
 // The slot export stays behind the admin token until TomTom confirms sharing derived data.
 const EXPORT_PUBLIC = /^(1|true|yes)$/i.test(String(process.env.EXPORT_PUBLIC || ''));
 const RAIN_MINUTES = Number(process.env.RAIN_MINUTES ?? 60);
+// Second source: Google Routes, compared and discarded (see src/crosscheck.mjs).
+const GOOGLE_ROUTES_KEY = (process.env.GOOGLE_ROUTES_API_KEY || '').trim();
+const GOOGLE_CHECK_HOURS = parseHours(process.env.GOOGLE_CHECK_HOURS || '3,6-23');
+const GOOGLE_MONTHLY_CAP = Number(process.env.GOOGLE_MONTHLY_CAP || 4800);
 
 const service = createService({ baseUrl: BASE_URL, dataDir: DATA_DIR, gateToken: GEV_GATE_PASSWORD });
 const corridors = createCorridorStore(join(DATA_DIR, 'corridors.db'));
@@ -78,7 +83,8 @@ const geocoder = createGeocoder({ key: TOMTOM_KEY, store: createStore(DATA_DIR) 
 const weeklyStore = createStore(join(DATA_DIR, 'weekly'));
 const weather = createWeatherStore(corridors.db);
 const rollups = createRollupStore(corridors.db);
-const status = { corridors: null, incidents: null, rain: null, rollup: null };
+const crosschecks = createCrossCheckStore(corridors.db);
+const status = { corridors: null, incidents: null, rain: null, rollup: null, crosscheck: null };
 
 /** Context on the OMR record, added once. */
 const SEED_NOTES = [
@@ -135,6 +141,7 @@ async function sampleAllCorridors() {
     }
   }
   status.corridors = { at: new Date().toISOString(), ok: results.filter((r) => !r.error).length, failed: results.filter((r) => r.error).map((r) => `${r.id}: ${r.error}`) };
+  crossCheckIfDue().catch((e) => console.error('[crosscheck] failed:', e.message));
   console.log(`[corridors] sampled ${results.map((r) => `${r.id}:${r.error ? 'ERR' : 'ok'}`).join(' ')}`);
   return results;
 }
@@ -176,6 +183,46 @@ function rollUp() {
   const purge = rollups.purgeRaw(RAW_RETENTION_DAYS, sectionedCorridors().map((c) => c.id));
   status.rollup = { at: new Date().toISOString(), days, slots, purged: purge.deleted };
   return status.rollup;
+}
+
+/**
+ * Once per scheduled IST hour, right after a TomTom round, ask Google for
+ * the same drives and keep only the comparison outcome.
+ */
+let lastCrossCheckHour = null;
+async function crossCheckIfDue({ force = false } = {}) {
+  if (!GOOGLE_ROUTES_KEY) return null;
+  const now = Date.now();
+  const hourKey = new Date(now + 330 * 60_000).toISOString().slice(0, 13);
+  if (!force && (!GOOGLE_CHECK_HOURS.has(istHour(now)) || lastCrossCheckHour === hourKey)) return null;
+  const last = crosschecks.lastHourKey();
+  if (!force && last && new Date(Date.parse(last) + 330 * 60_000).toISOString().slice(0, 13) === hourKey) return (lastCrossCheckHour = hourKey), null;
+  lastCrossCheckHour = hourKey;
+  const used = crosschecks.callsInMonth(istMonth(now));
+  const list = sectionedCorridors();
+  if (used + list.length > GOOGLE_MONTHLY_CAP) {
+    status.crosscheck = { at: new Date(now).toISOString(), skipped: `monthly cap reached (${used} of ${GOOGLE_MONTHLY_CAP})` };
+    return status.crosscheck;
+  }
+  const ts = new Date(now).toISOString();
+  const outcomes = [];
+  for (const c of list) {
+    const tomtom = travel.latest(c.id);
+    if (!tomtom.ts || now - Date.parse(tomtom.ts) > 10 * 60_000) continue; // no TomTom reading for this moment
+    try {
+      const g = await googleDrive(c, { key: GOOGLE_ROUTES_KEY });
+      const r = compareDrives(g, tomtom, c.lengthKm);
+      crosschecks.record(c.id, ts, tomtom.ts, r);
+      outcomes.push(`${c.id}:${r.outcome}`);
+    } catch (error) {
+      crosschecks.record(c.id, ts, tomtom.ts, { outcome: 'error', error: error.message.slice(0, 200) });
+      outcomes.push(`${c.id}:error`);
+      if (/HTTP (401|403)/.test(error.message)) break; // a key problem: do not repeat it for every road
+    }
+  }
+  status.crosscheck = { at: ts, outcomes, monthCalls: crosschecks.callsInMonth(istMonth(now)), cap: GOOGLE_MONTHLY_CAP };
+  console.log(`[crosscheck] ${outcomes.join(' ')}`);
+  return status.crosscheck;
 }
 
 // ---- road insight helpers ----
@@ -226,6 +273,8 @@ function weeklyReport(week) {
   list.sort((a, b) => (order.indexOf(a.id) + 1 || 99) - (order.indexOf(b.id) + 1 || 99));
   const rainFor = (c) => (RAIN_POINTS[c.definition?.road] ? weather.series(c.definition.road, new Date(Date.parse(week.start) - 28 * DAY).toISOString(), week.end) : null);
   const summaries = addCrossRoadNotes(list.map((corridor) => summarizeWeek({ travel, corridor, week, rain: rainFor(corridor) })));
+  const agreement = new Map(crosschecks.summary(week.start).map((r) => [r.corridor_id, r]));
+  for (const s of summaries) s.agreement = agreement.get(s.corridor.id) || null;
   const city = summarizeCity({ incidents, week });
   const notes = [...new Map(list.flatMap((c) => corridors.listNotes(c.id)).filter((n) => n.at >= week.start && n.at < week.end).sort((a, b) => a.at.localeCompare(b.at)).map((n) => [n.text, n])).values()];
   weeklyStore.write(week.key, { week, generatedAt: new Date().toISOString(), summaries, city });
@@ -386,7 +435,7 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   try {
     if (req.method === 'GET' && url.pathname === '/health')
-      return json(res, 200, { ...service.health(), corridors: { every_minutes: CORRIDOR_MINUTES, count: sectionedCorridors().length, last: status.corridors }, incidents: { every_minutes: INCIDENT_MINUTES, last: status.incidents }, rain: status.rain, rollup: status.rollup, retentionDays: RAW_RETENTION_DAYS, mail: mailHealth() });
+      return json(res, 200, { ...service.health(), corridors: { every_minutes: CORRIDOR_MINUTES, count: sectionedCorridors().length, last: status.corridors }, incidents: { every_minutes: INCIDENT_MINUTES, last: status.incidents }, rain: status.rain, rollup: status.rollup, crosscheck: { configured: Boolean(GOOGLE_ROUTES_KEY), hours: [...GOOGLE_CHECK_HOURS].join(','), cap: GOOGLE_MONTHLY_CAP, last: status.crosscheck }, retentionDays: RAW_RETENTION_DAYS, mail: mailHealth() });
     if (!authorized(req)) return json(res, 401, { error: 'unauthorized' });
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/summary')) return html(res, summaryHtml(), 'public, max-age=60');
     if (req.method === 'GET' && url.pathname === '/incidents') {
@@ -432,6 +481,7 @@ const server = createServer(async (req, res) => {
         rainSince: corridors.db.prepare('SELECT MIN(hour) AS h FROM rain_hourly').get()?.h || null,
         retentionDays: RAW_RETENTION_DAYS,
         exportPublic: EXPORT_PUBLIC,
+        crosscheck: { configured: Boolean(GOOGLE_ROUTES_KEY), rows: crosschecks.summary(new Date(Date.now() - 30 * DAY).toISOString()) },
         notes: corridors.db.prepare('SELECT * FROM notes ORDER BY at').all().filter((n, i, all) => all.findIndex((x) => x.text === n.text) === i),
       }), 'public, max-age=300');
     }
@@ -443,6 +493,7 @@ const server = createServer(async (req, res) => {
       return res.end(rollupCsv(rollups.rows(from, to, url.searchParams.get('corridor') || null), byId));
     }
     if (req.method === 'POST' && url.pathname === '/rollup') return json(res, 200, rollUp());
+    if (req.method === 'POST' && url.pathname === '/crosscheck') return json(res, 200, (await crossCheckIfDue({ force: true })) || { skipped: 'GOOGLE_ROUTES_API_KEY not set' });
     // ---- mail check: log in to the mail server and stop, no email sent ----
     if (req.method === 'POST' && url.pathname === '/mail/check') {
       const settings = mailSettingsReport();

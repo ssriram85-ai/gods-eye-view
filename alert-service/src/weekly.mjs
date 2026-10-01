@@ -10,6 +10,7 @@
 import { travelProfile, commuterTips, crossRoadNotes, samplesOf, istSlot, dayType, daysCovered, confidenceOf, sourceOf, quantile } from './insights.mjs';
 import { safetySpots, recurringJams } from './incidents.mjs';
 import { rainAt } from './weather.mjs';
+import { agreementText } from './crosscheck.mjs';
 
 const IST_MIN = 330;
 const DAY = 86_400_000;
@@ -201,7 +202,7 @@ ${s.periods.length ? `<table style="border-collapse:collapse;width:100%;font-siz
 <tr><th style="${th};text-align:left">Weekday rush</th><th style="${th}">Typical</th><th style="${th}">Bad day</th><th style="${th}">Worst</th><th style="${th}">Last week</th><th style="${th}">Change</th></tr>
 ${s.periods.map((p) => `<tr><td style="${td};text-align:left">${p.period === 'morning' ? 'Morning' : 'Evening'} <span style="color:#888">${esc(p.window)}</span></td><td style="${td}">${m(p.typical)}</td><td style="${td}">${m(p.bad)}</td><td style="${td}">${p.worstAt ? `${m(p.worstMinutes)} <span style="color:#888">${istDay(p.worstAt)} ${istTime(p.worstAt)}</span>` : '—'}</td><td style="${td}">${m(p.previousTypical)}</td><td style="${td};color:${tone(p.change)};font-weight:600">${signedMin(p.change)}</td></tr>`).join('')}
 </table>` : ''}
-<p style="margin:6px 0 0;color:#777;font-size:12px">${s.samples} readings this week (${Math.round(s.coverage * 100)}% of every-15-minutes) · ${esc(s.source.text)}${s.rain ? ` · rain ${s.rain.mm.toFixed(0)} mm, ${s.rain.wetHours} wet hour${s.rain.wetHours === 1 ? '' : 's'}${s.rain.excessMinutes != null ? `, wet-hour drives ${signedMin(s.rain.excessMinutes)} vs typical` : ''}` : ''}${s.mostJammed ? ` · TomTom reported jams most often on ${esc(s.mostJammed.section)} (${s.mostJammed.reports}×)` : ''} ${link(s)}</p>
+<p style="margin:6px 0 0;color:#777;font-size:12px">${s.samples} readings this week (${Math.round(s.coverage * 100)}% of every-15-minutes) · ${esc(s.source.text)}${s.rain ? ` · rain ${s.rain.mm.toFixed(0)} mm, ${s.rain.wetHours} wet hour${s.rain.wetHours === 1 ? '' : 's'}${s.rain.excessMinutes != null ? `, wet-hour drives ${signedMin(s.rain.excessMinutes)} vs typical` : ''}` : ''}${s.mostJammed ? ` · TomTom reported jams most often on ${esc(s.mostJammed.section)} (${s.mostJammed.reports}×)` : ''}${s.agreement?.compared ? ` · second source: ${esc(agreementText(s.agreement))}` : ''} ${link(s)}</p>
 </div>`;
   const cityBlock = city
     ? `<h2 style="font-size:17px;margin:28px 0 6px">Chennai incidents</h2>
