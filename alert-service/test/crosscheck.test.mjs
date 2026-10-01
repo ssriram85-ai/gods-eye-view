@@ -61,6 +61,8 @@ test('schedule hours, IST month, the store, the monthly count and the plain-lang
   const cols = db.prepare('PRAGMA table_info(crosscheck)').all().map((c) => c.name);
   assert.deepEqual(cols, ['corridor_id', 'ts', 'tomtom_ts', 'outcome', 'congestion_agree', 'legs_within20', 'legs', 'error'], 'no column can hold a Google duration or distance');
   assert.equal(store.callsInMonth('2026-10'), 3);
+  assert.equal(store.onlyErrorsAt('2026-10-01T14:30:00.000Z'), true);
+  assert.equal(store.onlyErrorsAt('2026-10-01T12:30:00.000Z'), false);
   assert.equal(store.callsInMonth('2026-09'), 0);
   const [row] = store.summary('2026-10-01T00:00:00Z');
   assert.equal(row.compared, 2);

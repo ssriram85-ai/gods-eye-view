@@ -196,7 +196,8 @@ async function crossCheckIfDue({ force = false } = {}) {
   const hourKey = new Date(now + 330 * 60_000).toISOString().slice(0, 13);
   if (!force && (!GOOGLE_CHECK_HOURS.has(istHour(now)) || lastCrossCheckHour === hourKey)) return null;
   const last = crosschecks.lastHourKey();
-  if (!force && last && new Date(Date.parse(last) + 330 * 60_000).toISOString().slice(0, 13) === hourKey) return (lastCrossCheckHour = hourKey), null;
+  // A round that only produced errors does not count as done: retry it on the next TomTom round.
+  if (!force && last && new Date(Date.parse(last) + 330 * 60_000).toISOString().slice(0, 13) === hourKey && !crosschecks.onlyErrorsAt(last)) return (lastCrossCheckHour = hourKey), null;
   lastCrossCheckHour = hourKey;
   const used = crosschecks.callsInMonth(istMonth(now));
   const list = sectionedCorridors();
@@ -206,6 +207,7 @@ async function crossCheckIfDue({ force = false } = {}) {
   }
   const ts = new Date(now).toISOString();
   const outcomes = [];
+  let firstError = null;
   for (const c of list) {
     const tomtom = travel.latest(c.id);
     if (!tomtom.ts || now - Date.parse(tomtom.ts) > 10 * 60_000) continue; // no TomTom reading for this moment
@@ -217,10 +219,13 @@ async function crossCheckIfDue({ force = false } = {}) {
     } catch (error) {
       crosschecks.record(c.id, ts, tomtom.ts, { outcome: 'error', error: error.message.slice(0, 200) });
       outcomes.push(`${c.id}:error`);
-      if (/HTTP (401|403)/.test(error.message)) break; // a key problem: do not repeat it for every road
+      firstError ??= error.message.slice(0, 300);
+      if (/HTTP 4\d\d/.test(error.message)) break; // a request or key problem repeats for every road: one call is enough
     }
   }
-  status.crosscheck = { at: ts, outcomes, monthCalls: crosschecks.callsInMonth(istMonth(now)), cap: GOOGLE_MONTHLY_CAP };
+  status.crosscheck = { at: ts, outcomes, ...(firstError ? { error: firstError } : {}), monthCalls: crosschecks.callsInMonth(istMonth(now)), cap: GOOGLE_MONTHLY_CAP };
+  // If this round failed, let the next TomTom round in the same hour try again.
+  if (outcomes.length && outcomes.every((o) => o.endsWith(':error'))) lastCrossCheckHour = null;
   console.log(`[crosscheck] ${outcomes.join(' ')}`);
   return status.crosscheck;
 }

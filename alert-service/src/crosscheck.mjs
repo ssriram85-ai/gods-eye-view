@@ -143,6 +143,8 @@ export function createCrossCheckStore(db) {
       return db.prepare("SELECT COUNT(*) AS n FROM crosscheck WHERE ts >= ? AND ts < ? AND outcome != 'skipped'").get(start, end).n;
     },
     lastHourKey: () => db.prepare('SELECT MAX(ts) AS ts FROM crosscheck').get()?.ts || null,
+    /** Did every check recorded at this instant fail? */
+    onlyErrorsAt: (ts) => db.prepare("SELECT SUM(CASE WHEN outcome = 'error' THEN 0 ELSE 1 END) AS ok FROM crosscheck WHERE ts = ?").get(ts)?.ok === 0,
     /** Agreement per corridor since an instant. */
     summary(fromIso) {
       return db.prepare(`SELECT corridor_id,
